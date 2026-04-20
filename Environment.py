@@ -34,7 +34,7 @@ def create_environment(gui=True):  # change to false for DIRECT
     p.setGravity(0, 0, -9.8)
 
     # Base Map - Superflat minecraft
-    p.loadURDF("plane.urdf")
+    #p.loadURDF("plane.urdf")
 
     # Camera
     if gui:
@@ -104,7 +104,7 @@ def create_environment(gui=True):  # change to false for DIRECT
 
     # 7 ORANGE rectangle
     rect7_col = p.createCollisionShape(p.GEOM_BOX, halfExtents=[0.6, 0.6, 1.2])
-    rect7_vis = p.createVisualShape(p.GEOM_BOX, halfExtents=[0.6, 0.6, 1.2], rgbaColor=[1, 0.5, 0, 1])
+    rect7_vis = p.createVisualShape(p.GEOM_BOX, halfExtents=[0.6, 0.6, 2.2], rgbaColor=[1, 0.5, 0, 1])
     p.createMultiBody(3.0, rect7_col, rect7_vis, basePosition=[6, 0, 1.4])
 
     # 8 PURPLE rectangle
@@ -115,40 +115,36 @@ def create_environment(gui=True):  # change to false for DIRECT
     # Sphere corner markers (diagonal inside map)
 
     sphere_col = p.createCollisionShape(p.GEOM_SPHERE, radius=1.60)
-    sphere_vis = p.createVisualShape(p.GEOM_SPHERE, radius=1.60, rgbaColor=[0.3, 0.3, 0.3, 1])
+    sphere_vis = p.createVisualShape(p.GEOM_SPHERE, radius=1.60, rgbaColor=[0.3, 0.3, 0.3, 1.8])
 
-    offset = -2.2
+    #offset -2.2
+    #z = 1.4
+
     z = 1.8
 
-    p.createMultiBody(1.0, sphere_col, sphere_vis, basePosition=[4 - offset, 4 - offset, z])
-    p.createMultiBody(1.0, sphere_col, sphere_vis, basePosition=[-4 + offset, 4 - offset, z])
-    p.createMultiBody(1.0, sphere_col, sphere_vis, basePosition=[4 - offset, -4 + offset, z])
-    p.createMultiBody(1.0, sphere_col, sphere_vis, basePosition=[-4 + offset, -4 + offset, z])
-    p.createMultiBody(1.0, sphere_col, sphere_vis, basePosition=[0, 0, z])
+    p.createMultiBody(1.0, sphere_col, sphere_vis, basePosition=[6.2, 6.2, z])
+    p.createMultiBody(1.0, sphere_col, sphere_vis, basePosition=[-6.2, 6.2, z])
+    p.createMultiBody(1.0, sphere_col, sphere_vis, basePosition=[6.2, -6.2, z])
+    p.createMultiBody(1.0, sphere_col, sphere_vis, basePosition=[-6.2, -6.2, z])
+    p.createMultiBody(1.0, sphere_col, sphere_vis, basePosition=[3, 0, z])
 
     # Humanoid Agent (MJCF - HumanoidBulletEnv style)
 
     p.setAdditionalSearchPath(pybullet_data.getDataPath())
 
-    humanoid_id = p.loadMJCF(
-        "mjcf/humanoid.xml"
-    )
+    humanoid_id = p.loadMJCF("mjcf/humanoid.xml",  flags=p.URDF_USE_SELF_COLLISION)
 
     humanoid_id = humanoid_id[0]
 
-    p.resetBasePositionAndOrientation(
-        humanoid_id,
-        [0, -3.5, 1.4],
-        [0, 0, 0, 1]
-    )
+    p.resetBasePositionAndOrientation(humanoid_id, [0, 3.5, 1.2], [0, 0, 0, 1])
+    p.resetBaseVelocity(humanoid_id, [0, 0, 0], [0, 0, 0])
 
     return HumanoidEnv(humanoid_id, cid)
-
 
 # Humanoid Agent Reinforcement Learning
 
 class HumanoidEnv:
-    START_POS = [0, -3.5, 1.2]
+    START_POS = [0, 3.5, -2.5]
     START_ORN = [0, 0, 0, 1]
 
     def __init__(self, humanoid_id, cid):
