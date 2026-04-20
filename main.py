@@ -21,9 +21,9 @@ def main():
 
     gamma = 0.99
 
-    for episode in range(11500):
+    for episode in range(3000000):
 
-        obs = env.reset()
+        obs = env.reset() #cleared every episode?
 
         log_probs = []
         rewards = []

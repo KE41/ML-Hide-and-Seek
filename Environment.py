@@ -177,6 +177,8 @@ class HumanoidEnv:
         pos, orn = p.getBasePositionAndOrientation(self.humanoid)
         vel, ang = p.getBaseVelocity(self.humanoid)
 
+        print(f"Pos: {pos}")
+
         # Convert to numpy arrays for consistency
         pos = np.array(pos)
         orn = np.array(orn)
@@ -195,71 +197,65 @@ class HumanoidEnv:
         return np.array(obs, dtype=np.float32)
 
     def step(self, action):
-        action = np.asarray(action, dtype=np.float32).flatten()
-
-        # [ ... Joint motor control application remains here ... ]
-        for i, j in enumerate(self.joint_ids):
-            target = float(np.clip(action[i], -1, 1))
+        """
+        Executes one step of the environment using the provided action.
+        'action' should be a vector corresponding to the joint controls.
+        """
+        # --- 1. APPLY ACTION (Joint Control) ---
+        # We move away from teleporting and instead apply torques/velocities
+        # to the humanoid joints based on the neural network output.
+        for i, joint_idx in enumerate(self.joint_ids):
             p.setJointMotorControl2(
-                self.humanoid,
-                j,
-                p.POSITION_CONTROL,
-                targetPosition=target,
-                force=300
+                bodyUniqueId=self.humanoid,
+                jointIndex=joint_idx,
+                controlMode=p.VELOCITY_CONTROL,  # Using velocity for more stable training
+                targetVelocity=action[i],  # Action value mapped to speed
+                force=100  # Strength of the motor
             )
 
-        pos, orn = p.getBasePositionAndOrientation(self.humanoid)
-
-        config = p.getJointState(self.humanoid)
-
-        target_orn, target_pos = p.computeInverseKinematics(
-            self.humanoid,
-            config,
-            [0, 0, 1],  # Desired end-effector position (if applicable)
-            [0, 0, 0]  # Desired end-effector orientation (if applicable)
-        )
-
-        p.setBasePositionAndOrientation(
-            self.humanoid,
-            target_pos,
-            target_orn
-        )
-
+        # --- 2. STEP PHYSICS ---
         p.stepSimulation()
 
-        # get state
-        pos, _ = p.getBasePositionAndOrientation(self.humanoid)
-        vel, _ = p.getBaseVelocity(self.humanoid)
+        # --- 3. RETRIEVE PHYSICAL STATE ---
+        # Get position and velocity directly from the physics engine
+        pos, orn = p.getBasePositionAndOrientation(self.humanoid)
+        vel, ang_vel = p.getBaseVelocity(self.humanoid)
 
-        print(f"\n--- Step Debug ---")
-        print(f"Position (X, Y, Z): {pos}")
-        print(f"Velocity (Vx, Vy, Vz): {vel}")
+        # --- 4. REWARD CALCULATION ---
+        # All rewards/penalties should ideally be subtracted to create a "cost"
+        # or added as a "positive gain".
 
-        # Reward Function
+        # A. Forward Progress Reward (The primary goal: Move along Y axis)
+        forward_reward = vel[1] * 1.0
 
-        # 1. Forward Progress Reward (The primary goal)
-        forward_reward = vel[1] * 0.5
-
-        # 2. Gravity/Falling Penalty: Penalize falling below 0.8m
+        # B. Height/Falling Penalty (Penalize if the torso drops too low)
         height_penalty = 0.0
         if pos[2] < 1.2:
-            low_height_penalty = max(0, 0.8 - pos[2]) * 5.0
-            fall_speed_penalty = max(0, -vel[2]) * 1.5
-            height_penalty = low_height_penalty + fall_speed_penalty
+            # Calculate penalty based on how much below threshold it is
+            low_height_val = max(0, 1.2 - pos[2]) * 5.0
+            # Penalize downward velocity (falling speed)
+            fall_speed_penalty = max(0, -vel[2]) * 2.0
+            height_penalty = low_height_val + fall_speed_penalty
 
-            # 3. Stability Penalty: Penalize drifting far left/right (lateral deviation from X=0)
+        # C. Lateral Deviation Penalty (Corrected: must be subtracted)
+        # We penalize the robot for moving away from X = 0
         lateral_penalty = abs(pos[0]) * 0.5
 
-        # 4. Momentum Bonus: Mild penalty for excessive side-to-side movement
         momentum_bonus = -abs(vel[0]) * 0.1
 
-        reward = forward_reward - height_penalty + lateral_penalty + momentum_bonus
+        # D. Momentum/Stability Bonus (A negative penalty to reduce wobbling)
+        # Penalize excessive side-to-side velocity on the X axis
+        stability_penalty = abs(vel[0]) * 0.5
 
-        # End of reward calculation
+        # FINAL REWARD AGGREGATION
+        # Structure: Progress - Height_Penalty - Lateral_Penalty - Stability_Penalty
+        reward = forward_reward - height_penalty - lateral_penalty - stability_penalty + momentum_bonus
 
-        # termination
-        done = pos[2] < 0.5  # Use a clear floor threshold for episode end
+        # --- 5. TERMINATION LOGIC ---
+        # Terminate episode if the robot falls below a certain height threshold
+        done = pos[2] < 0.5
 
+        # --- 6. OBSERVATION ---
         obs = self.get_obs()
 
         return obs, reward, done
