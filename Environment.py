@@ -177,6 +177,12 @@ class HumanoidEnv:
         pos, orn = p.getBasePositionAndOrientation(self.humanoid)
         vel, ang = p.getBaseVelocity(self.humanoid)
 
+        # Convert to numpy arrays for consistency
+        pos = np.array(pos)
+        orn = np.array(orn)
+        vel = np.array(vel)
+        ang = np.array(ang)
+
         obs.extend(pos)
         obs.extend(vel)
         obs.extend(ang)
@@ -191,7 +197,7 @@ class HumanoidEnv:
     def step(self, action):
         action = np.asarray(action, dtype=np.float32).flatten()
 
-        # apply clipped joint targets (reduced strength for stability)
+        # [ ... Joint motor control application remains here ... ]
         for i, j in enumerate(self.joint_ids):
             target = float(np.clip(action[i], -1, 1))
             p.setJointMotorControl2(
@@ -199,8 +205,25 @@ class HumanoidEnv:
                 j,
                 p.POSITION_CONTROL,
                 targetPosition=target,
-                force=20
+                force=300
             )
+
+        pos, orn = p.getBasePositionAndOrientation(self.humanoid)
+
+        config = p.getJointState(self.humanoid)
+
+        target_orn, target_pos = p.computeInverseKinematics(
+            self.humanoid,
+            config,
+            [0, 0, 1],  # Desired end-effector position (if applicable)
+            [0, 0, 0]  # Desired end-effector orientation (if applicable)
+        )
+
+        p.setBasePositionAndOrientation(
+            self.humanoid,
+            target_pos,
+            target_orn
+        )
 
         p.stepSimulation()
 
@@ -208,33 +231,35 @@ class HumanoidEnv:
         pos, _ = p.getBasePositionAndOrientation(self.humanoid)
         vel, _ = p.getBaseVelocity(self.humanoid)
 
-        # reward components
-        forward_reward = 20.0 * vel[1]
-        alive_bonus = 0.2
-        height_penalty = 2.0 * max(0, 0.8 - pos[2])
-        stationary_penalty = -1.0 if abs(vel[1]) < 0.05 else 0.0
+        print(f"\n--- Step Debug ---")
+        print(f"Position (X, Y, Z): {pos}")
+        print(f"Velocity (Vx, Vy, Vz): {vel}")
 
-        reward = forward_reward + alive_bonus - height_penalty
+        # Reward Function
+
+        # 1. Forward Progress Reward (The primary goal)
+        forward_reward = vel[1] * 0.5
+
+        # 2. Gravity/Falling Penalty: Penalize falling below 0.8m
+        height_penalty = 0.0
+        if pos[2] < 1.2:
+            low_height_penalty = max(0, 0.8 - pos[2]) * 5.0
+            fall_speed_penalty = max(0, -vel[2]) * 1.5
+            height_penalty = low_height_penalty + fall_speed_penalty
+
+            # 3. Stability Penalty: Penalize drifting far left/right (lateral deviation from X=0)
+        lateral_penalty = abs(pos[0]) * 0.5
+
+        # 4. Momentum Bonus: Mild penalty for excessive side-to-side movement
+        momentum_bonus = -abs(vel[0]) * 0.1
+
+        reward = forward_reward - height_penalty + lateral_penalty + momentum_bonus
+
+        # End of reward calculation
 
         # termination
-        done = pos[2] < 0.8
+        done = pos[2] < 0.5  # Use a clear floor threshold for episode end
 
         obs = self.get_obs()
 
         return obs, reward, done
-
-    # Reward Function
-
-    def reward(self):
-        pos, _ = p.getBasePositionAndOrientation(self.humanoid)
-        vel, _ = p.getBaseVelocity(self.humanoid)
-
-        forward_reward = vel[1]  # move forward (y direction)
-        alive_bonus = 1.0  # reward for staying alive
-        height_penalty = 2.0 * max(0, 0.8 - pos[2])  # penalize falling
-
-        return forward_reward + alive_bonus - height_penalty
-
-    def is_done(self):
-        pos, _ = p.getBasePositionAndOrientation(self.humanoid)
-        return pos[2] < 0.5
