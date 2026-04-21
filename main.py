@@ -12,6 +12,8 @@ def main():
     env = create_environment(gui=True)
 
     obs = env.reset()
+    print("Reset obs shape:", obs.shape)
+    print("Reset obs values:", obs[:10])  # first 10 values
 
     obs_dim = len(obs)
     act_dim = len(env.joint_ids)
@@ -32,6 +34,7 @@ def main():
         steps = 0
 
         while not done and steps < 300:
+            print(f"Step {steps}, done={done}")
 
             obs_tensor = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
 
@@ -39,6 +42,7 @@ def main():
 
             action = action.squeeze(0)
             log_prob = log_prob.squeeze(0)
+            print("log_prob shape:", log_prob.shape)  # should be []  or [1]
 
             action = torch.clamp(action, -1.0, 1.0)
 
@@ -67,7 +71,7 @@ def main():
         baseline = returns.mean()
         advantages = returns - baseline
 
-        entropy_bonus = -0.001 * log_probs.mean()
+        entropy_bonus = 0.001 * log_probs.detach().mean()
         loss = -(log_probs * advantages).mean() + entropy_bonus
 
         optimizer.zero_grad()

@@ -25,13 +25,13 @@ def create_environment(gui=True):  # change to false for DIRECT
     # Disables UI
     p.configureDebugVisualizer(p.COV_ENABLE_GUI, 0)
 
-    # Fps fix 1
-    p.setTimeStep(1. / 200.)
-
     # Pybullet sim settings
     p.setAdditionalSearchPath(pybullet_data.getDataPath())
     p.resetSimulation()
     p.setGravity(0, 0, -9.8)
+
+    # Fps fix 1
+    p.setTimeStep(1. / 200.)
 
     # Base Map - Superflat minecraft
     #p.loadURDF("plane.urdf")
@@ -52,12 +52,13 @@ def create_environment(gui=True):  # change to false for DIRECT
     wall = p.createCollisionShape(p.GEOM_BOX, halfExtents=[0.4, 10, 2])
     topbottom_wall = p.createCollisionShape(p.GEOM_BOX, halfExtents=[10, 0.4, 2])
     floor = p.createCollisionShape(p.GEOM_BOX, halfExtents=[10, 10, 0.2])
-    box = p.createCollisionShape(p.GEOM_BOX, halfExtents=[0.5, 0.5, 0.5])
 
     # Visual shapes
     wall_vis = p.createVisualShape(p.GEOM_BOX, halfExtents=[0.4, 10, 2], rgbaColor=[1, 0, 0, 1])
     topbottom_vis = p.createVisualShape(p.GEOM_BOX, halfExtents=[10, 0.4, 2], rgbaColor=[0, 0, 1, 1])
-    floor_vis = p.createVisualShape(p.GEOM_BOX, halfExtents=[10, 10, 0.2], rgbaColor=[0.5, 0.5, 0.5, 1])
+    floor_vis = p.createVisualShape(p.GEOM_BOX, halfExtents=[10, 10, 0.0], rgbaColor=[0.5, 0.5, 0.5, 1])
+    floor_id = p.createMultiBody(0, floor, floor_vis, basePosition=[0, 0, 0.2])
+    p.changeVisualShape(floor_id, -1, rgbaColor=[0.5, 0.5, 0.5, 1]) # change floor to gray
 
     # Make Bodies
 
@@ -68,7 +69,7 @@ def create_environment(gui=True):  # change to false for DIRECT
     p.createMultiBody(0, topbottom_wall, topbottom_vis, basePosition=[0, -10, 2])
 
     # Floor
-    p.createMultiBody(0, floor, floor_vis, basePosition=[0, 0, 0])
+    p.createMultiBody(0, floor, floor_vis, basePosition=[0, 0, 0,2])
 
     # Symmetrical fixed shapes (original 8-point circle)
 
@@ -112,6 +113,8 @@ def create_environment(gui=True):  # change to false for DIRECT
     rect8_vis = p.createVisualShape(p.GEOM_BOX, halfExtents=[0.6, 0.6, 1.2], rgbaColor=[0.5, 0, 1, 1])
     p.createMultiBody(3.0, rect8_col, rect8_vis, basePosition=[-6, 0, 1.4])
 
+
+
     # Sphere corner markers (diagonal inside map)
 
     sphere_col = p.createCollisionShape(p.GEOM_SPHERE, radius=1.60)
@@ -132,9 +135,13 @@ def create_environment(gui=True):  # change to false for DIRECT
 
     p.setAdditionalSearchPath(pybullet_data.getDataPath())
 
-    humanoid_id = p.loadMJCF("mjcf/humanoid.xml",  flags=p.URDF_USE_SELF_COLLISION)
+    humanoid_id = p.loadMJCF("mjcf/humanoid.xml", flags=p.URDF_USE_SELF_COLLISION) #apparently two bodies are present
+    print("All MJCF body IDs:", humanoid_id)  # print ALL ids before taking [0]
+    print("Num bodies loaded:", len(humanoid_id))
 
-    humanoid_id = humanoid_id[0]
+    humanoid_id = humanoid_id[-1]
+    pos, _ = p.getBasePositionAndOrientation(humanoid_id)
+    print("Body [0] initial position:", pos)  # is this actually the torso?
 
     p.resetBasePositionAndOrientation(humanoid_id, [0, 3.5, 1.2], [0, 0, 0, 1])
     p.resetBaseVelocity(humanoid_id, [0, 0, 0], [0, 0, 0])
@@ -144,7 +151,7 @@ def create_environment(gui=True):  # change to false for DIRECT
 # Humanoid Agent Reinforcement Learning
 
 class HumanoidEnv:
-    START_POS = [0, 3.5, -2.5]
+    START_POS = [0, 3.5, 1.2] # 0, 3.5 -2.5 working
     START_ORN = [0, 0, 0, 1]
 
     def __init__(self, humanoid_id, cid):
@@ -177,8 +184,6 @@ class HumanoidEnv:
         pos, orn = p.getBasePositionAndOrientation(self.humanoid)
         vel, ang = p.getBaseVelocity(self.humanoid)
 
-        print(f"Pos: {pos}")
-
         # Convert to numpy arrays for consistency
         pos = np.array(pos)
         orn = np.array(orn)
@@ -188,6 +193,7 @@ class HumanoidEnv:
         obs.extend(pos)
         obs.extend(vel)
         obs.extend(ang)
+        obs.extend(orn)
 
         for j in self.joint_ids:
             state = p.getJointState(self.humanoid, j)
@@ -213,13 +219,14 @@ class HumanoidEnv:
                 force=100  # Strength of the motor
             )
 
-        # --- 2. STEP PHYSICS ---
         p.stepSimulation()
 
         # --- 3. RETRIEVE PHYSICAL STATE ---
         # Get position and velocity directly from the physics engine
         pos, orn = p.getBasePositionAndOrientation(self.humanoid)
         vel, ang_vel = p.getBaseVelocity(self.humanoid)
+
+        print(f"Pos: {pos}")
 
         # --- 4. REWARD CALCULATION ---
         # All rewards/penalties should ideally be subtracted to create a "cost"
