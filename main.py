@@ -51,7 +51,7 @@ def main():
             action = torch.clamp(action, -1.0, 1.0)
 
             # Keep the window open
-            time.sleep(1. / 200.)
+            time.sleep(1. / 200.) # Remove for DIRECT MODE
 
             obs, reward, done = env.step(action.detach().numpy())
 

@@ -3,11 +3,12 @@
 import pybullet as p
 import pybullet_data
 import numpy as np
+import time
 
 """Environment Creation"""
 
 
-def create_environment(gui=True):  # change to false for DIRECT
+def create_environment(gui):  # change to false for DIRECT
 
     try:
         p.disconnect()
@@ -31,7 +32,7 @@ def create_environment(gui=True):  # change to false for DIRECT
     p.setGravity(0, 0, -9.8)
 
     # Fps fix 1
-    p.setTimeStep(1. / 200.)
+    p.setTimeStep(1. / 400.)  # Remove for DIRECT MODE
 
     # Base Map - Superflat minecraft
     #p.loadURDF("plane.urdf")
@@ -40,8 +41,8 @@ def create_environment(gui=True):  # change to false for DIRECT
     if gui:
         p.resetDebugVisualizerCamera(
             cameraDistance=11,
-            cameraYaw=180,
-            cameraPitch=-35,
+            cameraYaw=270,
+            cameraPitch=-40,
             cameraTargetPosition=[0, 0, 0]
         )
 
@@ -185,6 +186,23 @@ class HumanoidEnv:
         pos, orn = p.getBasePositionAndOrientation(self.humanoid)
         vel, ang = p.getBaseVelocity(self.humanoid)
 
+        obs_dict = {
+            'position': {'x': pos[0], 'y': pos[1], 'z': pos[2]},
+            'orientation': orn,
+            'velocity': {'x': vel[0], 'y': vel[1], 'z': vel[2]}
+        }
+
+        # Goal directions to aid movement
+        #goal_positions = self.get_goal_positions()  # Returns list of target positions
+
+       # for i, goal in enumerate(goal_positions):
+         #   dist_to_goal = np.linalg.norm(
+           #     obs_dict['position']['y'] - goal[1],
+             #   p=np.inf  # Only consider Y-axis distance
+            #)
+
+            obs_dict[f'goal_{i}_dist'] = dist_to_goal
+
         # Convert to numpy arrays for consistency
         pos = np.array(pos)
         orn = np.array(orn)
@@ -196,12 +214,19 @@ class HumanoidEnv:
         obs.extend(ang)
         obs.extend(orn)
 
+        # Time calculation
+        current_time = time.time()
+        episode_duration = current_time - self.start_time
+        avg_velocity = np.linalg.norm(vel) / max(episode_duration, 1e-6)
+
+        obs_dict['time'] = {'duration': episode_duration, 'avg_vel': avg_velocity}
+
         for j in self.joint_ids:
             state = p.getJointState(self.humanoid, j)
             obs.append(state[0])
             obs.append(state[1])
 
-        return np.array(obs, dtype=np.float32)
+        return np.array(obs, dtype=np.float32), obs_dict
 
     def step(self, action):
         """
@@ -217,7 +242,7 @@ class HumanoidEnv:
                 jointIndex=joint_idx,
                 controlMode=p.VELOCITY_CONTROL,  # Using velocity for more stable training
                 targetVelocity=action[i],  # Action value mapped to speed
-                force=100  # Strength of the motor
+                force=50  # Strength of the motor
             )
 
         p.stepSimulation()
@@ -229,27 +254,33 @@ class HumanoidEnv:
 
         #print(f"Pos: {pos}")
 
-        # --- 4. REWARD CALCULATION ---
-        # All rewards/penalties should ideally be subtracted to create a "cost"
-        # or added as a "positive gain".
+
 
         # A. Forward Progress Reward (The primary goal: Move along Y axis)
-        forward_reward = vel[1] * 1.0
+        forward_velocity = vel[1] * 1.0
+        forward_reward = forward_velocity * 2
+        distance_travelled = self.track_distance(action)
+        forward_reward += distance_travelled * 0.5
 
         # B. Height/Falling Penalty (Penalize if the torso drops too low)
         height_penalty = 0.0
+
         if pos[2] < 1.2:
-            # Calculate penalty based on how much below threshold it is
             low_height_val = max(0, 1.2 - pos[2]) * 5.0
-            # Penalize downward velocity (falling speed)
             fall_speed_penalty = max(0, -vel[2]) * 2.0
             height_penalty = low_height_val + fall_speed_penalty
 
-        # C. Lateral Deviation Penalty (Corrected: must be subtracted)
         # We penalize the robot for moving away from X = 0
-        lateral_penalty = abs(pos[0]) * 0.5
+        lateral_penalty = abs(pos[0]) * 0.3
 
         momentum_bonus = -abs(vel[0]) * 0.1
+
+        goal_rewards = []
+        # --- B. GOAL PROXIMITY REWARD (Long-term objective) ---
+        goal_rewards = []
+
+        2
+
 
         # D. Momentum/Stability Bonus (A negative penalty to reduce wobbling)
         # Penalize excessive side-to-side velocity on the X axis
