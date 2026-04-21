@@ -34,15 +34,19 @@ def main():
         steps = 0
 
         while not done and steps < 300:
-            print(f"Step {steps}, done={done}")
+            #print(f"Step {steps}, done={done}")
 
             obs_tensor = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
 
             action, log_prob = policy.sample(obs_tensor)
 
+            #print(f"[DEBUG] Initial log_prob shape (before squeeze): {log_prob.shape}")
+
             action = action.squeeze(0)
             log_prob = log_prob.squeeze(0)
-            print("log_prob shape:", log_prob.shape)  # should be []  or [1]
+            # Debug line to confirm the scalar result
+            #print(f"[DEBUG] Final log_prob shape (after squeeze): {log_prob.shape}. Is it a scalar? {log_prob.dim() == 0}")
+            #print("log_prob shape:", log_prob.shape)  # should be []  or [1]
 
             action = torch.clamp(action, -1.0, 1.0)
 

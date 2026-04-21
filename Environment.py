@@ -39,8 +39,8 @@ def create_environment(gui=True):  # change to false for DIRECT
     # Camera
     if gui:
         p.resetDebugVisualizerCamera(
-            cameraDistance=9,
-            cameraYaw=50,
+            cameraDistance=11,
+            cameraYaw=180,
             cameraPitch=-35,
             cameraTargetPosition=[0, 0, 0]
         )
@@ -51,14 +51,16 @@ def create_environment(gui=True):  # change to false for DIRECT
     # Collision Shapes (walls + floor only doubled)
     wall = p.createCollisionShape(p.GEOM_BOX, halfExtents=[0.4, 10, 2])
     topbottom_wall = p.createCollisionShape(p.GEOM_BOX, halfExtents=[10, 0.4, 2])
-    floor = p.createCollisionShape(p.GEOM_BOX, halfExtents=[10, 10, 0.2])
+    ##floor = p.createCollisionShape(p.GEOM_BOX, halfExtents=[10, 10, 2])
 
     # Visual shapes
     wall_vis = p.createVisualShape(p.GEOM_BOX, halfExtents=[0.4, 10, 2], rgbaColor=[1, 0, 0, 1])
     topbottom_vis = p.createVisualShape(p.GEOM_BOX, halfExtents=[10, 0.4, 2], rgbaColor=[0, 0, 1, 1])
-    floor_vis = p.createVisualShape(p.GEOM_BOX, halfExtents=[10, 10, 0.0], rgbaColor=[0.5, 0.5, 0.5, 1])
-    floor_id = p.createMultiBody(0, floor, floor_vis, basePosition=[0, 0, 0.2])
-    p.changeVisualShape(floor_id, -1, rgbaColor=[0.5, 0.5, 0.5, 1]) # change floor to gray
+
+    # Floor
+    #floor_vis = p.createVisualShape(p.GEOM_BOX, halfExtents=[10, 10, 0.1], rgbaColor=[0.5, 0.5, 0.5, 1])
+    #floor_id = p.createMultiBody(0, floor, floor_vis, basePosition=[0, 0, 0.1])
+    #p.changeVisualShape(floor_id, -1, rgbaColor=[0.5, 0.5, 0.5, 1]) # change floor to gray
 
     # Make Bodies
 
@@ -68,62 +70,59 @@ def create_environment(gui=True):  # change to false for DIRECT
     p.createMultiBody(0, topbottom_wall, topbottom_vis, basePosition=[0, 10, 2])
     p.createMultiBody(0, topbottom_wall, topbottom_vis, basePosition=[0, -10, 2])
 
-    # Floor
-    p.createMultiBody(0, floor, floor_vis, basePosition=[0, 0, 0,2])
-
     # Symmetrical fixed shapes (original 8-point circle)
 
     # 1 RED cube
     cube1_col = p.createCollisionShape(p.GEOM_BOX, halfExtents=[0.6, 0.6, 0.6])
     cube1_vis = p.createVisualShape(p.GEOM_BOX, halfExtents=[0.6, 0.6, 0.6], rgbaColor=[1, 0, 0, 1])
-    p.createMultiBody(2.0, cube1_col, cube1_vis, basePosition=[4, 4, 0.8])
+    p.createMultiBody(2.0, cube1_col, cube1_vis, basePosition=[4, 4, 1.8])
 
     # 2 BLUE cube
     cube2_col = p.createCollisionShape(p.GEOM_BOX, halfExtents=[0.6, 0.6, 0.6])
     cube2_vis = p.createVisualShape(p.GEOM_BOX, halfExtents=[0.6, 0.6, 0.6], rgbaColor=[0, 0, 1, 1])
-    p.createMultiBody(2.0, cube2_col, cube2_vis, basePosition=[-4, -4, 0.8])
+    p.createMultiBody(2.0, cube2_col, cube2_vis, basePosition=[-4, -4, 1.8])
 
     # 3 GREEN cube
     cube3_col = p.createCollisionShape(p.GEOM_BOX, halfExtents=[0.6, 0.6, 0.6])
     cube3_vis = p.createVisualShape(p.GEOM_BOX, halfExtents=[0.6, 0.6, 0.6], rgbaColor=[0, 1, 0, 1])
-    p.createMultiBody(2.0, cube3_col, cube3_vis, basePosition=[4, -4, 0.8])
+    p.createMultiBody(2.0, cube3_col, cube3_vis, basePosition=[4, -4, 1.8])
 
     # 4 YELLOW cube
     cube4_col = p.createCollisionShape(p.GEOM_BOX, halfExtents=[0.6, 0.6, 0.6])
     cube4_vis = p.createVisualShape(p.GEOM_BOX, halfExtents=[0.6, 0.6, 0.6], rgbaColor=[1, 1, 0, 1])
-    p.createMultiBody(2.0, cube4_col, cube4_vis, basePosition=[-4, 4, 0.8])
+    p.createMultiBody(2.0, cube4_col, cube4_vis, basePosition=[-4, 4, 1.8])
 
     # 5 CYAN rectangle
     rect5_col = p.createCollisionShape(p.GEOM_BOX, halfExtents=[0.6, 0.6, 1.2])
     rect5_vis = p.createVisualShape(p.GEOM_BOX, halfExtents=[0.6, 0.6, 1.2], rgbaColor=[0, 1, 1, 1])
-    p.createMultiBody(3.0, rect5_col, rect5_vis, basePosition=[0, 6, 1.4])
+    p.createMultiBody(3.0, rect5_col, rect5_vis, basePosition=[0, 6, 2.4])
 
     # 6 MAGENTA rectangle (unchanged)
     rect6_col = p.createCollisionShape(p.GEOM_BOX, halfExtents=[0.6, 0.6, 1.2])
     rect6_vis = p.createVisualShape(p.GEOM_BOX, halfExtents=[0.6, 0.6, 1.2], rgbaColor=[1, 0, 1, 1])
-    p.createMultiBody(3.0, rect6_col, rect6_vis, basePosition=[0, -6, 1.4])
+    p.createMultiBody(3.0, rect6_col, rect6_vis, basePosition=[0, -6, 2.4])
 
     # 7 ORANGE rectangle
     rect7_col = p.createCollisionShape(p.GEOM_BOX, halfExtents=[0.6, 0.6, 1.2])
     rect7_vis = p.createVisualShape(p.GEOM_BOX, halfExtents=[0.6, 0.6, 2.2], rgbaColor=[1, 0.5, 0, 1])
-    p.createMultiBody(3.0, rect7_col, rect7_vis, basePosition=[6, 0, 1.4])
+    p.createMultiBody(3.0, rect7_col, rect7_vis, basePosition=[6, 0, 2.4])
 
     # 8 PURPLE rectangle
     rect8_col = p.createCollisionShape(p.GEOM_BOX, halfExtents=[0.6, 0.6, 1.2])
     rect8_vis = p.createVisualShape(p.GEOM_BOX, halfExtents=[0.6, 0.6, 1.2], rgbaColor=[0.5, 0, 1, 1])
-    p.createMultiBody(3.0, rect8_col, rect8_vis, basePosition=[-6, 0, 1.4])
+    p.createMultiBody(3.0, rect8_col, rect8_vis, basePosition=[-6, 0, 2.4])
 
 
 
     # Sphere corner markers (diagonal inside map)
 
     sphere_col = p.createCollisionShape(p.GEOM_SPHERE, radius=1.60)
-    sphere_vis = p.createVisualShape(p.GEOM_SPHERE, radius=1.60, rgbaColor=[0.3, 0.3, 0.3, 1.8])
+    sphere_vis = p.createVisualShape(p.GEOM_SPHERE, radius=1.60, rgbaColor=[0.3, 0.3, 0.3, 2.8])
 
     #offset -2.2
     #z = 1.4
 
-    z = 1.8
+    z = 2.8
 
     p.createMultiBody(1.0, sphere_col, sphere_vis, basePosition=[6.2, 6.2, z])
     p.createMultiBody(1.0, sphere_col, sphere_vis, basePosition=[-6.2, 6.2, z])
@@ -135,18 +134,19 @@ def create_environment(gui=True):  # change to false for DIRECT
 
     p.setAdditionalSearchPath(pybullet_data.getDataPath())
 
-    humanoid_id = p.loadMJCF("mjcf/humanoid.xml", flags=p.URDF_USE_SELF_COLLISION) #apparently two bodies are present
-    print("All MJCF body IDs:", humanoid_id)  # print ALL ids before taking [0]
-    print("Num bodies loaded:", len(humanoid_id))
+    humanoid_bodies = p.loadMJCF("mjcf/humanoid.xml", flags=p.URDF_USE_SELF_COLLISION) #apparently two bodies are present
+    print("All MJCF body IDs:", humanoid_bodies)  # print ALL ids before taking [0]
+    print("Num bodies loaded:", len(humanoid_bodies))
 
-    humanoid_id = humanoid_id[-1]
+    root_id = humanoid_bodies[0]
+    humanoid_id = humanoid_bodies[-1]
     pos, _ = p.getBasePositionAndOrientation(humanoid_id)
-    print("Body [0] initial position:", pos)  # is this actually the torso?
+    #print("Body [0] initial position:", pos)  # is this actually the torso?
 
-    p.resetBasePositionAndOrientation(humanoid_id, [0, 3.5, 1.2], [0, 0, 0, 1])
+    p.resetBasePositionAndOrientation(humanoid_id, [0, 3.5, 2.2], [0, 0, 0, 1])
     p.resetBaseVelocity(humanoid_id, [0, 0, 0], [0, 0, 0])
 
-    return HumanoidEnv(humanoid_id, cid)
+    return HumanoidEnv(humanoid_id, cid, root_id)
 
 # Humanoid Agent Reinforcement Learning
 
@@ -154,8 +154,9 @@ class HumanoidEnv:
     START_POS = [0, 3.5, 1.2] # 0, 3.5 -2.5 working
     START_ORN = [0, 0, 0, 1]
 
-    def __init__(self, humanoid_id, cid):
+    def __init__(self, humanoid_id, cid, root_id):
         self.humanoid = humanoid_id
+        self.root_id = root_id
         self.cid = cid
         self.joint_ids = []
 
@@ -169,7 +170,7 @@ class HumanoidEnv:
 
     def reset(self):
         p.resetBasePositionAndOrientation(
-            self.humanoid, self.START_POS, self.START_ORN
+            self.root_id, self.START_POS, self.START_ORN
         )
         p.resetBaseVelocity(self.humanoid, [0, 0, 0], [0, 0, 0])
 
@@ -226,7 +227,7 @@ class HumanoidEnv:
         pos, orn = p.getBasePositionAndOrientation(self.humanoid)
         vel, ang_vel = p.getBaseVelocity(self.humanoid)
 
-        print(f"Pos: {pos}")
+        #print(f"Pos: {pos}")
 
         # --- 4. REWARD CALCULATION ---
         # All rewards/penalties should ideally be subtracted to create a "cost"
