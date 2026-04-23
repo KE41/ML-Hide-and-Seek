@@ -7,37 +7,29 @@ import time
 
 """Environment Creation"""
 
+# Store world body IDs so reset() can remove only the humanoid, not the map
+_WORLD_BODY_COUNT = None  # set after map is built, before humanoid is loaded
 
-def create_environment(gui):  # change to false for DIRECT
+
+def create_environment(gui):
 
     try:
         p.disconnect()
     except Exception:
-        pass  # No existing connection, that's fine
+        pass
 
     cid = p.connect(p.GUI if gui else p.DIRECT)
-
     if cid < 0:
         raise RuntimeError("Failed to connect to PyBullet")
 
-    # Disabled mouse movement of objects / robot
     p.configureDebugVisualizer(p.COV_ENABLE_MOUSE_PICKING, 0)
-
-    # Disables UI
     p.configureDebugVisualizer(p.COV_ENABLE_GUI, 0)
 
-    # Pybullet sim settings
     p.setAdditionalSearchPath(pybullet_data.getDataPath())
     p.resetSimulation()
     p.setGravity(0, 0, -9.8)
+    p.setTimeStep(1. / 240.)
 
-    # Fps fix 1
-    p.setTimeStep(1. / 400.)  # Remove for DIRECT MODE
-
-    # Base Map - Superflat minecraft
-    #p.loadURDF("plane.urdf")
-
-    # Camera
     if gui:
         p.resetDebugVisualizerCamera(
             cameraDistance=11,
@@ -46,30 +38,19 @@ def create_environment(gui):  # change to false for DIRECT
             cameraTargetPosition=[0, 0, 0]
         )
 
-    # Map -----------------
-    # (x,y,z) - max double
+    # ---- Floor ----
+    p.loadURDF("plane.urdf")
 
-    # Collision Shapes (walls + floor only doubled)
-    wall = p.createCollisionShape(p.GEOM_BOX, halfExtents=[0.4, 10, 2])
-    topbottom_wall = p.createCollisionShape(p.GEOM_BOX, halfExtents=[10, 0.4, 2])
-    ##floor = p.createCollisionShape(p.GEOM_BOX, halfExtents=[10, 10, 2])
+    # ---- Walls ----
+    wall          = p.createCollisionShape(p.GEOM_BOX, halfExtents=[0.4, 10, 2])
+    tb_wall       = p.createCollisionShape(p.GEOM_BOX, halfExtents=[10, 0.4, 2])
+    wall_vis      = p.createVisualShape(p.GEOM_BOX, halfExtents=[0.4, 10, 2],  rgbaColor=[1,0,0,1])
+    tb_vis        = p.createVisualShape(p.GEOM_BOX, halfExtents=[10, 0.4, 2], rgbaColor=[0,0,1,1])
 
-    # Visual shapes
-    wall_vis = p.createVisualShape(p.GEOM_BOX, halfExtents=[0.4, 10, 2], rgbaColor=[1, 0, 0, 1])
-    topbottom_vis = p.createVisualShape(p.GEOM_BOX, halfExtents=[10, 0.4, 2], rgbaColor=[0, 0, 1, 1])
-
-    # Floor
-    #floor_vis = p.createVisualShape(p.GEOM_BOX, halfExtents=[10, 10, 0.1], rgbaColor=[0.5, 0.5, 0.5, 1])
-    #floor_id = p.createMultiBody(0, floor, floor_vis, basePosition=[0, 0, 0.1])
-    #p.changeVisualShape(floor_id, -1, rgbaColor=[0.5, 0.5, 0.5, 1]) # change floor to gray
-
-    # Make Bodies
-
-    # Walls (2x map size)
-    p.createMultiBody(0, wall, wall_vis, basePosition=[10, 0, 2])
-    p.createMultiBody(0, wall, wall_vis, basePosition=[-10, 0, 2])
-    p.createMultiBody(0, topbottom_wall, topbottom_vis, basePosition=[0, 10, 2])
-    p.createMultiBody(0, topbottom_wall, topbottom_vis, basePosition=[0, -10, 2])
+    p.createMultiBody(0, wall,    wall_vis, basePosition=[ 10,  0, 2])
+    p.createMultiBody(0, wall,    wall_vis, basePosition=[-10,  0, 2])
+    p.createMultiBody(0, tb_wall, tb_vis,   basePosition=[  0, 10, 2])
+    p.createMultiBody(0, tb_wall, tb_vis,   basePosition=[  0,-10, 2])
 
     # Symmetrical fixed shapes (original 8-point circle)
 
@@ -98,7 +79,7 @@ def create_environment(gui):  # change to false for DIRECT
     rect5_vis = p.createVisualShape(p.GEOM_BOX, halfExtents=[0.6, 0.6, 1.2], rgbaColor=[0, 1, 1, 1])
     p.createMultiBody(3.0, rect5_col, rect5_vis, basePosition=[0, 6, 2.4])
 
-    # 6 MAGENTA rectangle (unchanged)
+    # 6 MAGENTA rectangle
     rect6_col = p.createCollisionShape(p.GEOM_BOX, halfExtents=[0.6, 0.6, 1.2])
     rect6_vis = p.createVisualShape(p.GEOM_BOX, halfExtents=[0.6, 0.6, 1.2], rgbaColor=[1, 0, 1, 1])
     p.createMultiBody(3.0, rect6_col, rect6_vis, basePosition=[0, -6, 2.4])
@@ -113,188 +94,218 @@ def create_environment(gui):  # change to false for DIRECT
     rect8_vis = p.createVisualShape(p.GEOM_BOX, halfExtents=[0.6, 0.6, 1.2], rgbaColor=[0.5, 0, 1, 1])
     p.createMultiBody(3.0, rect8_col, rect8_vis, basePosition=[-6, 0, 2.4])
 
-
-
     # Sphere corner markers (diagonal inside map)
-
     sphere_col = p.createCollisionShape(p.GEOM_SPHERE, radius=1.60)
     sphere_vis = p.createVisualShape(p.GEOM_SPHERE, radius=1.60, rgbaColor=[0.3, 0.3, 0.3, 2.8])
 
-    #offset -2.2
-    #z = 1.4
-
     z = 2.8
-
-    p.createMultiBody(1.0, sphere_col, sphere_vis, basePosition=[6.2, 6.2, z])
+    p.createMultiBody(1.0, sphere_col, sphere_vis, basePosition=[6.2,  6.2, z])
     p.createMultiBody(1.0, sphere_col, sphere_vis, basePosition=[-6.2, 6.2, z])
     p.createMultiBody(1.0, sphere_col, sphere_vis, basePosition=[6.2, -6.2, z])
-    p.createMultiBody(1.0, sphere_col, sphere_vis, basePosition=[-6.2, -6.2, z])
-    p.createMultiBody(1.0, sphere_col, sphere_vis, basePosition=[3, 0, z])
+    p.createMultiBody(1.0, sphere_col, sphere_vis, basePosition=[-6.2,-6.2, z])
+    p.createMultiBody(1.0, sphere_col, sphere_vis, basePosition=[3,    0,   z])
 
-    # Humanoid Agent (MJCF - HumanoidBulletEnv style)
+    # Record how many bodies exist BEFORE loading the humanoid.
+    # reset() will remove every body with ID >= this count and reload fresh.
+    world_body_count = p.getNumBodies()
 
-    p.setAdditionalSearchPath(pybullet_data.getDataPath())
+    env = HumanoidEnv(cid, world_body_count)
+    env._load_humanoid()   # load humanoid for the first time
+    return env
 
-    humanoid_bodies = p.loadMJCF("mjcf/humanoid.xml", flags=p.URDF_USE_SELF_COLLISION) #apparently two bodies are present
-    print("All MJCF body IDs:", humanoid_bodies)  # print ALL ids before taking [0]
-    print("Num bodies loaded:", len(humanoid_bodies))
 
-    root_id = humanoid_bodies[0]
-    humanoid_id = humanoid_bodies[-1]
-    pos, _ = p.getBasePositionAndOrientation(humanoid_id)
-    #print("Body [0] initial position:", pos)  # is this actually the torso?
-
-    p.resetBasePositionAndOrientation(humanoid_id, [0, 3.5, 2.2], [0, 0, 0, 1])
-    p.resetBaseVelocity(humanoid_id, [0, 0, 0], [0, 0, 0])
-
-    return HumanoidEnv(humanoid_id, cid, root_id)
-
-# Humanoid Agent Reinforcement Learning
-
+# ---------------------------------------------------------------------------
 class HumanoidEnv:
-    START_POS = [0, 3.5, 1.2] # 0, 3.5 -2.5 working
+
+    START_POS = [0, 3.5, 1.3]
     START_ORN = [0, 0, 0, 1]
 
-    def __init__(self, humanoid_id, cid, root_id):
-        self.humanoid = humanoid_id
-        self.root_id = root_id
-        self.cid = cid
-        self.joint_ids = []
+    GOAL_POSITIONS = [
+        [0,  0.0, 1.0],
+        [0, -3.5, 1.0],
+        [0, -7.0, 1.0],
+    ]
 
+    # Physics / action scaling
+    PHYSICS_HZ  = 240
+    SUB_STEPS   = 4
+    MAX_FORCE   = 60      # lower = joints move more gently
+    # Actions from the policy are in [-1,1]; multiply by this to get target rad/s.
+    # Lower = slower, more natural movement.
+    VEL_SCALE   = 0.5     # actions [-1,1] -> max 0.5 rad/s — slow, natural movement
+
+    def __init__(self, cid, world_body_count):
+        self.cid              = cid
+        self.world_body_count = world_body_count  # body IDs below this are map bodies
+        self.humanoid         = None
+        self.all_bodies       = []
+        self.joint_ids        = []
+        self.start_time       = time.time()
+        self.prev_pos         = np.array(self.START_POS, dtype=np.float64)
+        self.current_goal_idx = 0
+
+    # ------------------------------------------------------------------
+    # Load (or reload) the humanoid MJCF from scratch.
+    # This is the only reliable way to fully reset a multi-body MJCF in
+    # PyBullet — resetBasePositionAndOrientation on MJCF bodies is broken
+    # because internal constraints between sub-bodies are not re-anchored,
+    # so the root body drags the torso back to its old position on the
+    # very first stepSimulation() call after the teleport.
+    # ------------------------------------------------------------------
+    def _load_humanoid(self):
+        # Remove any previously loaded humanoid bodies
+        for bid in self.all_bodies:
+            try:
+                p.removeBody(bid)
+            except Exception:
+                pass
+
+        p.setAdditionalSearchPath(pybullet_data.getDataPath())
+        humanoid_bodies = p.loadMJCF("mjcf/humanoid.xml",
+                                     flags=p.URDF_USE_SELF_COLLISION)
+        print("Loaded MJCF body IDs:", humanoid_bodies)
+
+        self.all_bodies = list(humanoid_bodies)
+        self.humanoid   = humanoid_bodies[-1]  # torso
+
+        # Place every sub-body at the start position immediately after load
+        for bid in self.all_bodies:
+            p.resetBasePositionAndOrientation(bid, self.START_POS, self.START_ORN)
+            p.resetBaseVelocity(bid, [0,0,0], [0,0,0])
+
+        # Collect controllable joint IDs from the torso body
+        self.joint_ids = []
         for i in range(p.getNumJoints(self.humanoid)):
             info = p.getJointInfo(self.humanoid, i)
-
             if info[2] != p.JOINT_FIXED:
                 self.joint_ids.append(i)
 
-        print("joints found:", len(self.joint_ids))
+        print(f"Controllable joints: {len(self.joint_ids)}")
 
+    # --- goal helpers ---------------------------------------------------
+    def get_goal_positions(self):
+        return self.GOAL_POSITIONS
+
+    def get_current_goal(self):
+        return np.array(self.GOAL_POSITIONS[self.current_goal_idx], dtype=np.float64)
+
+    def _update_goal(self, pos):
+        goal = self.get_current_goal()
+        if (np.linalg.norm(np.array(pos) - goal) < 1.5
+                and self.current_goal_idx < len(self.GOAL_POSITIONS) - 1):
+            self.current_goal_idx += 1
+
+    # --- distance tracker -----------------------------------------------
+    def track_distance(self):
+        pos, _ = p.getBasePositionAndOrientation(self.humanoid)
+        pos     = np.array(pos)
+        delta_y = pos[1] - self.prev_pos[1]
+        self.prev_pos = pos
+        return -delta_y  # positive = moved in -Y (forward)
+
+    # --- reset ----------------------------------------------------------
     def reset(self):
-        p.resetBasePositionAndOrientation(
-            self.root_id, self.START_POS, self.START_ORN
-        )
-        p.resetBaseVelocity(self.humanoid, [0, 0, 0], [0, 0, 0])
+        # Reload the MJCF completely — this is the correct PyBullet reset for
+        # multi-body MJCF files.  resetBasePositionAndOrientation is unreliable
+        # because it does not re-anchor the internal root-to-torso constraint,
+        # causing the torso to snap back to the root's fallen position on the
+        # first stepSimulation() after the teleport.
+        self._load_humanoid()
 
-        for j in self.joint_ids:
-            p.resetJointState(self.humanoid, j, targetValue=0, targetVelocity=0)
+        self.start_time       = time.time()
+        self.prev_pos         = np.array(self.START_POS, dtype=np.float64)
+        self.current_goal_idx = 0
 
-        return self.get_obs()
+        obs, _ = self.get_obs()
+        return obs
 
+    # --- observation ----------------------------------------------------
     def get_obs(self):
         obs = []
 
         pos, orn = p.getBasePositionAndOrientation(self.humanoid)
         vel, ang = p.getBaseVelocity(self.humanoid)
 
+        pos_np = np.array(pos)
+        orn_np = np.array(orn)
+        vel_np = np.array(vel)
+        ang_np = np.array(ang)
+
         obs_dict = {
-            'position': {'x': pos[0], 'y': pos[1], 'z': pos[2]},
+            'position':    {'x': pos[0], 'y': pos[1], 'z': pos[2]},
             'orientation': orn,
-            'velocity': {'x': vel[0], 'y': vel[1], 'z': vel[2]}
+            'velocity':    {'x': vel[0], 'y': vel[1], 'z': vel[2]},
         }
 
-        # Goal directions to aid movement
-        #goal_positions = self.get_goal_positions()  # Returns list of target positions
+        for i, goal in enumerate(self.get_goal_positions()):
+            dist = abs(pos[1] - goal[1])
+            obs_dict[f'goal_{i}_dist'] = dist
+            obs.append(dist)
 
-       # for i, goal in enumerate(goal_positions):
-         #   dist_to_goal = np.linalg.norm(
-           #     obs_dict['position']['y'] - goal[1],
-             #   p=np.inf  # Only consider Y-axis distance
-            #)
+        obs.extend(pos_np)
+        obs.extend(vel_np)
+        obs.extend(ang_np)
+        obs.extend(orn_np)
 
-            obs_dict[f'goal_{i}_dist'] = dist_to_goal
-
-        # Convert to numpy arrays for consistency
-        pos = np.array(pos)
-        orn = np.array(orn)
-        vel = np.array(vel)
-        ang = np.array(ang)
-
-        obs.extend(pos)
-        obs.extend(vel)
-        obs.extend(ang)
-        obs.extend(orn)
-
-        # Time calculation
-        current_time = time.time()
-        episode_duration = current_time - self.start_time
-        avg_velocity = np.linalg.norm(vel) / max(episode_duration, 1e-6)
-
+        episode_duration = time.time() - self.start_time
+        avg_velocity     = np.linalg.norm(vel_np) / max(episode_duration, 1e-6)
         obs_dict['time'] = {'duration': episode_duration, 'avg_vel': avg_velocity}
 
         for j in self.joint_ids:
             state = p.getJointState(self.humanoid, j)
-            obs.append(state[0])
-            obs.append(state[1])
+            obs.append(state[0])  # joint angle
+            obs.append(state[1])  # joint velocity
 
         return np.array(obs, dtype=np.float32), obs_dict
 
+    # --- step -----------------------------------------------------------
     def step(self, action):
-        """
-        Executes one step of the environment using the provided action.
-        'action' should be a vector corresponding to the joint controls.
-        """
-        # --- 1. APPLY ACTION (Joint Control) ---
-        # We move away from teleporting and instead apply torques/velocities
-        # to the humanoid joints based on the neural network output.
         for i, joint_idx in enumerate(self.joint_ids):
+            # Scale action [-1,1] → target velocity in rad/s.
+            # Scale action to target velocity in rad/s
+            target_vel = float(action[i]) * self.VEL_SCALE
             p.setJointMotorControl2(
                 bodyUniqueId=self.humanoid,
                 jointIndex=joint_idx,
-                controlMode=p.VELOCITY_CONTROL,  # Using velocity for more stable training
-                targetVelocity=action[i],  # Action value mapped to speed
-                force=50  # Strength of the motor
+                controlMode=p.VELOCITY_CONTROL,
+                targetVelocity=target_vel,
+                force=self.MAX_FORCE
             )
 
-        p.stepSimulation()
+        for _ in range(self.SUB_STEPS):
+            p.stepSimulation()
 
-        # --- 3. RETRIEVE PHYSICAL STATE ---
-        # Get position and velocity directly from the physics engine
         pos, orn = p.getBasePositionAndOrientation(self.humanoid)
-        vel, ang_vel = p.getBaseVelocity(self.humanoid)
+        vel, _   = p.getBaseVelocity(self.humanoid)
 
-        #print(f"Pos: {pos}")
+        self._update_goal(pos)
 
+        # Forward progress (-Y direction)
+        forward_reward  = -vel[1] * 2.0
+        forward_reward += self.track_distance() * 0.5
 
-
-        # A. Forward Progress Reward (The primary goal: Move along Y axis)
-        forward_velocity = vel[1] * 1.0
-        forward_reward = forward_velocity * 2
-        distance_travelled = self.track_distance(action)
-        forward_reward += distance_travelled * 0.5
-
-        # B. Height/Falling Penalty (Penalize if the torso drops too low)
+        # Fall penalty
         height_penalty = 0.0
+        if pos[2] < 0.8:
+            height_penalty = max(0, 0.8 - pos[2]) * 5.0 + max(0, -vel[2]) * 2.0
 
-        if pos[2] < 1.2:
-            low_height_val = max(0, 1.2 - pos[2]) * 5.0
-            fall_speed_penalty = max(0, -vel[2]) * 2.0
-            height_penalty = low_height_val + fall_speed_penalty
-
-        # We penalize the robot for moving away from X = 0
-        lateral_penalty = abs(pos[0]) * 0.3
-
-        momentum_bonus = -abs(vel[0]) * 0.1
-
-        goal_rewards = []
-        # --- B. GOAL PROXIMITY REWARD (Long-term objective) ---
-        goal_rewards = []
-
-        2
-
-
-        # D. Momentum/Stability Bonus (A negative penalty to reduce wobbling)
-        # Penalize excessive side-to-side velocity on the X axis
+        lateral_penalty   = abs(pos[0]) * 0.3
         stability_penalty = abs(vel[0]) * 0.5
+        momentum_bonus    = -abs(vel[0]) * 0.1
 
-        # FINAL REWARD AGGREGATION
-        # Structure: Progress - Height_Penalty - Lateral_Penalty - Stability_Penalty
-        reward = forward_reward - height_penalty - lateral_penalty - stability_penalty + momentum_bonus
+        dist_to_goal = np.linalg.norm(np.array(pos) - self.get_current_goal())
+        goal_reward  = max(0.0, 5.0 - dist_to_goal) * 0.2
 
-        # --- 5. TERMINATION LOGIC ---
-        # Terminate episode if the robot falls below a certain height threshold
-        done = pos[2] < 0.5
+        reward = (
+            forward_reward
+            + goal_reward
+            - height_penalty
+            - lateral_penalty
+            - stability_penalty
+            + momentum_bonus
+        )
 
-        # --- 6. OBSERVATION ---
-        obs = self.get_obs()
+        done = bool(pos[2] < 0.3)
 
+        obs, _ = self.get_obs()
         return obs, reward, done

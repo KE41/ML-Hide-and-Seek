@@ -7,82 +7,96 @@ import time
 from Environment import create_environment
 from PyTorchPolicy import PolicyNet
 
+SAVE_PATH  = "policy.pt"
+SAVE_EVERY = 500   # save weights every N steps
 
 def main():
     env = create_environment(gui=True)
 
-    obs = env.reset()
-    print("Reset obs shape:", obs.shape)
-    print("Reset obs values:", obs[:10])  # first 10 values
+    # Read initial obs without touching physics
+    obs, _ = env.get_obs()
+    print("obs shape:", obs.shape)
 
     obs_dim = len(obs)
     act_dim = len(env.joint_ids)
+    print(f"obs_dim={obs_dim}  act_dim={act_dim}")
 
-    policy = PolicyNet(obs_dim, act_dim)
+    policy    = PolicyNet(obs_dim, act_dim)
     optimizer = optim.Adam(policy.parameters(), lr=1e-3)
 
-    gamma = 0.99
+    # Load saved weights if they exist
+    start_step = 0
+    try:
+        checkpoint  = torch.load(SAVE_PATH)
+        policy.load_state_dict(checkpoint['policy'])
+        optimizer.load_state_dict(checkpoint['optimizer'])
+        start_step  = checkpoint['step']
+        print(f"Resumed from step {start_step}")
+    except FileNotFoundError:
+        print("No checkpoint found, starting fresh")
 
-    for episode in range(3000000):
+    gamma     = 0.99
+    PHYSICS_HZ = 240
+    SUB_STEPS  = 4
+    step_dt    = SUB_STEPS / PHYSICS_HZ
 
-        obs = env.reset() #cleared every episode?
+    # Collect experience in rolling windows instead of episodes.
+    # The robot NEVER resets — it just keeps walking (or falling) indefinitely.
+    WINDOW = 300   # how many steps to collect before doing one gradient update
 
-        log_probs = []
-        rewards = []
+    log_probs = []
+    rewards   = []
+    step      = start_step
 
-        done = False
-        steps = 0
+    while True:
 
-        while not done and steps < 300:
-            #print(f"Step {steps}, done={done}")
+        obs_tensor = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
+        action, log_prob = policy.sample(obs_tensor)
+        action   = action.squeeze(0)
+        log_prob = log_prob.squeeze(0)
+        action   = torch.clamp(action, -1.0, 1.0)
 
-            obs_tensor = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
+        obs, reward, done = env.step(action.detach().numpy())
 
-            action, log_prob = policy.sample(obs_tensor)
+        time.sleep(step_dt)  # pace GUI to real-time
 
-            #print(f"[DEBUG] Initial log_prob shape (before squeeze): {log_prob.shape}")
+        log_probs.append(log_prob)
+        rewards.append(reward)
+        step += 1
 
-            action = action.squeeze(0)
-            log_prob = log_prob.squeeze(0)
-            # Debug line to confirm the scalar result
-            #print(f"[DEBUG] Final log_prob shape (after squeeze): {log_prob.shape}. Is it a scalar? {log_prob.dim() == 0}")
-            #print("log_prob shape:", log_prob.shape)  # should be []  or [1]
+        # When the window is full, update the policy and clear the buffer
+        if len(rewards) >= WINDOW:
+            returns = []
+            G = 0
+            for r in reversed(rewards):
+                G = r + gamma * G
+                returns.insert(0, G)
 
-            action = torch.clamp(action, -1.0, 1.0)
+            returns    = torch.tensor(returns, dtype=torch.float32)
+            returns    = (returns - returns.mean()) / (returns.std() + 1e-8)
+            log_probs_t = torch.stack(log_probs)
+            advantages  = returns - returns.mean()
 
-            # Keep the window open
-            time.sleep(1. / 200.) # Remove for DIRECT MODE
+            entropy_bonus = 0.001 * log_probs_t.detach().mean()
+            loss = -(log_probs_t * advantages).mean() + entropy_bonus
 
-            obs, reward, done = env.step(action.detach().numpy())
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
 
-            log_probs.append(log_prob)
-            rewards.append(reward)
+            print(f"Step {step:8d} | reward/window {sum(rewards):8.2f} | loss {loss.item():.4f}")
 
-            steps += 1
+            log_probs = []
+            rewards   = []
 
-        returns = []
-        G = 0
-
-        for r in reversed(rewards):
-            G = r + gamma * G
-            returns.insert(0, G)
-
-        returns = torch.tensor(returns, dtype=torch.float32)
-        returns = (returns - returns.mean()) / (returns.std() + 1e-8)
-
-        log_probs = torch.stack(log_probs)
-
-        baseline = returns.mean()
-        advantages = returns - baseline
-
-        entropy_bonus = 0.001 * log_probs.detach().mean()
-        loss = -(log_probs * advantages).mean() + entropy_bonus
-
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-
-        print("Episode:", episode, "Reward:", sum(rewards))
+        # Save checkpoint periodically
+        if step % SAVE_EVERY == 0:
+            torch.save({
+                'step':      step,
+                'policy':    policy.state_dict(),
+                'optimizer': optimizer.state_dict(),
+            }, SAVE_PATH)
+            print(f"  -> Saved checkpoint at step {step}")
 
 
 if __name__ == "__main__":
