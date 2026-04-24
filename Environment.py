@@ -129,31 +129,21 @@ class HumanoidEnv:
     # Physics / action scaling
     PHYSICS_HZ  = 240
     SUB_STEPS   = 4
-    MAX_FORCE   = 80      # enough torque to stand without launching the body
-    # Actions from the policy are in [-1,1]; multiply by this to get target rad/s.
-    # Lower = slower, more natural movement.
-    VEL_SCALE   = 1.0     # actions [-1,1] -> max 1 rad/s — controlled joint movement
+    MAX_FORCE   = 80
+    VEL_SCALE   = 1.0
 
     def __init__(self, cid, world_body_count):
         self.cid              = cid
-        self.world_body_count = world_body_count  # body IDs below this are map bodies
+        self.world_body_count = world_body_count
         self.humanoid         = None
         self.all_bodies       = []
         self.joint_ids        = []
         self.start_time       = time.time()
         self.prev_pos         = np.array(self.START_POS, dtype=np.float64)
         self.current_goal_idx = 0
+        self._step_count      = 0   # tracks steps for action penalty
 
-    # ------------------------------------------------------------------
-    # Load (or reload) the humanoid MJCF from scratch.
-    # This is the only reliable way to fully reset a multi-body MJCF in
-    # PyBullet — resetBasePositionAndOrientation on MJCF bodies is broken
-    # because internal constraints between sub-bodies are not re-anchored,
-    # so the root body drags the torso back to its old position on the
-    # very first stepSimulation() call after the teleport.
-    # ------------------------------------------------------------------
     def _load_humanoid(self):
-        # Remove any previously loaded humanoid bodies
         for bid in self.all_bodies:
             try:
                 p.removeBody(bid)
@@ -166,9 +156,8 @@ class HumanoidEnv:
         print("Loaded MJCF body IDs:", humanoid_bodies)
 
         self.all_bodies = list(humanoid_bodies)
-        self.humanoid   = humanoid_bodies[-1]  # torso
+        self.humanoid   = humanoid_bodies[-1]
 
-        # Collect controllable joint IDs first (needed before settling)
         self.joint_ids = []
         for i in range(p.getNumJoints(self.humanoid)):
             info = p.getJointInfo(self.humanoid, i)
@@ -177,30 +166,23 @@ class HumanoidEnv:
 
         print(f"Controllable joints: {len(self.joint_ids)}")
 
-        # Place every sub-body at the start position
         for bid in self.all_bodies:
             p.resetBasePositionAndOrientation(bid, self.START_POS, self.START_ORN)
             p.resetBaseVelocity(bid, [0, 0, 0], [0, 0, 0])
 
-        # Zero all joints so the humanoid starts in a neutral T-pose
         for j in self.joint_ids:
             p.resetJointState(self.humanoid, j, targetValue=0.0, targetVelocity=0.0)
 
-        # Hold joints at zero and let physics settle for a moment so the
-        # internal MJCF constraints resolve before we hand control to the policy.
-        # Without this the constraint solver applies a large impulse on frame 1
-        # that launches the humanoid into the air.
         for j in self.joint_ids:
             p.setJointMotorControl2(
                 self.humanoid, j,
                 controlMode=p.POSITION_CONTROL,
                 targetPosition=0.0,
-                force=500   # high force just for settling, not used during training
+                force=500
             )
-        for _ in range(120):   # 120 steps at 240 Hz = 0.5 seconds to settle
+        for _ in range(120):
             p.stepSimulation()
 
-        # Now zero velocity again after settling
         for bid in self.all_bodies:
             p.resetBaseVelocity(bid, [0, 0, 0], [0, 0, 0])
 
@@ -223,21 +205,15 @@ class HumanoidEnv:
         pos     = np.array(pos)
         delta_y = pos[1] - self.prev_pos[1]
         self.prev_pos = pos
-        return -delta_y  # positive = moved in -Y (forward)
+        return -delta_y
 
     # --- reset ----------------------------------------------------------
     def reset(self):
-        # Reload the MJCF completely — this is the correct PyBullet reset for
-        # multi-body MJCF files.  resetBasePositionAndOrientation is unreliable
-        # because it does not re-anchor the internal root-to-torso constraint,
-        # causing the torso to snap back to the root's fallen position on the
-        # first stepSimulation() after the teleport.
         self._load_humanoid()
-
         self.start_time       = time.time()
         self.prev_pos         = np.array(self.START_POS, dtype=np.float64)
         self.current_goal_idx = 0
-
+        self._step_count      = 0
         obs, _ = self.get_obs()
         return obs
 
@@ -275,16 +251,16 @@ class HumanoidEnv:
 
         for j in self.joint_ids:
             state = p.getJointState(self.humanoid, j)
-            obs.append(state[0])  # joint angle
-            obs.append(state[1])  # joint velocity
+            obs.append(state[0])
+            obs.append(state[1])
 
         return np.array(obs, dtype=np.float32), obs_dict
 
     # --- step -----------------------------------------------------------
     def step(self, action):
+        self._step_count += 1
+
         for i, joint_idx in enumerate(self.joint_ids):
-            # Scale action [-1,1] → target velocity in rad/s.
-            # Scale action to target velocity in rad/s
             target_vel = float(action[i]) * self.VEL_SCALE
             p.setJointMotorControl2(
                 bodyUniqueId=self.humanoid,
@@ -298,41 +274,104 @@ class HumanoidEnv:
             p.stepSimulation()
 
         pos, orn = p.getBasePositionAndOrientation(self.humanoid)
-        vel, _   = p.getBaseVelocity(self.humanoid)
+        vel, ang_vel = p.getBaseVelocity(self.humanoid)
 
         self._update_goal(pos)
 
-        # --- UPRIGHT REWARD (most important — teaches standing before walking) ---
-        # The humanoid torso is ~1.4m tall when standing. Reward height directly
-        # so the agent learns that being tall is always better than lying flat.
-        # Clipped to [0, 1] so a standing robot gets +3.0 every step.
-        upright_reward = min(pos[2] / 1.4, 1.0) * 3.0
+        # ----------------------------------------------------------------
+        # REWARD FUNCTION
+        # Based on:
+        #   - PyBullet's own HumanoidBulletEnv (bullet3 gym_locomotion_envs.py)
+        #   - HuMam paper: 6-term reward for stability + energy efficiency
+        #   - Benchmarking PBRS paper: robust scaling via potential-based terms
+        # ----------------------------------------------------------------
 
-        # --- FORWARD PROGRESS (secondary — only useful once it can stand) ---
-        # Reward moving in -Y direction, but scale by how upright it is so that
-        # sliding on its face doesn't give the same reward as walking upright.
-        upright_fraction = min(pos[2] / 1.4, 1.0)          # 0 when flat, 1 when standing
-        forward_reward   = -vel[1] * 2.0 * upright_fraction
-        forward_reward  += self.track_distance() * 0.5 * upright_fraction
+        # 1. ALIVE BONUS
+        # Flat bonus every step the humanoid stays upright above fall threshold.
+        # PyBullet's own humanoid env uses +1.0/step — we use +2.0 to
+        # strongly prioritise survival over everything else early in training.
+        # This is the single most important signal: just stay alive.
+        alive_bonus = 2.0 if pos[2] > 0.4 else 0.0
 
-        # --- STABILITY (penalise spinning / falling sideways) ---
-        # Angular velocity penalty keeps the torso from spinning wildly
-        _, ang_vel = p.getBaseVelocity(self.humanoid)
-        spin_penalty     = np.linalg.norm(ang_vel) * 0.1
-        lateral_penalty  = abs(pos[0]) * 0.2   # stay near X=0
+        # 2. UPRIGHT REWARD
+        # Height-proportional reward so partial uprightness is better than
+        # fully flat. Standing humanoid torso ~1.4 m → reward up to +1.5/step.
+        # Capped at 1.0 so it can't exceed alive_bonus in magnitude.
+        upright_fraction = min(pos[2] / 1.4, 1.0)
+        upright_reward   = upright_fraction * 1.5
 
-        # --- GOAL PROXIMITY ---
+        # 3. FORWARD VELOCITY REWARD
+        # Reward forward velocity (-Y direction) scaled by how upright the
+        # humanoid is — crawling/sliding on its face gives almost nothing.
+        # Coefficient 1.5 from PyBullet humanoid env tuning: enough to
+        # motivate walking without overshadowing the alive bonus.
+        forward_vel_reward = -vel[1] * 1.5 * upright_fraction
+
+        # 4. DISTANCE PROGRESS REWARD
+        # Incremental -Y displacement per step, also upright-gated.
+        # Coefficient 0.5: smaller than velocity reward so it supplements
+        # rather than dominates (avoids reward hacking via single big lunge).
+        forward_dist_reward = self.track_distance() * 0.5 * upright_fraction
+
+        # 5. ENERGY / ELECTRICITY COST
+        # Penalise large actions to encourage efficient, smooth movement.
+        # PyBullet uses -2.0 * |torque * velocity|; we approximate with
+        # -0.005 * sum(action^2) which is gentler but still discourages
+        # thrashing. Too large and the agent learns to do nothing.
+        electricity_cost = -0.005 * float(np.sum(np.square(action)))
+
+        # 6. STALL TORQUE COST
+        # Small penalty for applying force while joints are near-stationary
+        # (wastes energy). PyBullet uses -0.1; we match that value.
+        joint_vels = np.array([
+            p.getJointState(self.humanoid, j)[1] for j in self.joint_ids
+        ])
+        stall_cost = -0.1 * float(np.sum(np.square(action) * (np.abs(joint_vels) < 0.1)))
+
+        # 7. JOINTS AT LIMIT COST
+        # Discourage joints being pinned at their mechanical limits (causes
+        # jerky/frozen-limb behaviour). PyBullet uses -0.1 per stuck joint.
+        joint_angles = np.array([
+            p.getJointState(self.humanoid, j)[0] for j in self.joint_ids
+        ])
+        joint_info   = [p.getJointInfo(self.humanoid, j) for j in self.joint_ids]
+        at_limit     = sum(
+            1 for k, info in enumerate(joint_info)
+            if abs(joint_angles[k]) > 0.99 * max(abs(info[8]), abs(info[9]), 1e-3)
+        )
+        joints_at_limit_cost = -0.1 * at_limit
+
+        # 8. SPIN / ANGULAR VELOCITY PENALTY
+        # Prevents the torso spinning wildly to farm forward velocity.
+        # 0.05 coefficient: light enough not to block turning, heavy enough
+        # to stop uncontrolled rotation.
+        spin_penalty = -0.05 * float(np.linalg.norm(ang_vel))
+
+        # 9. LATERAL DRIFT PENALTY
+        # Keep the humanoid near X=0 (the centreline of the map).
+        # 0.1 coefficient: gentle nudge, not a hard wall.
+        lateral_penalty = -0.1 * abs(pos[0])
+
+        # 10. GOAL PROXIMITY BONUS
+        # Small bonus for closing in on the current waypoint, upright-gated.
         dist_to_goal = np.linalg.norm(np.array(pos) - self.get_current_goal())
-        goal_reward  = max(0.0, 5.0 - dist_to_goal) * 0.1 * upright_fraction
+        goal_reward  = max(0.0, 5.0 - dist_to_goal) * 0.05 * upright_fraction
 
+        # ---- Final reward ----
         reward = (
-            upright_reward      # stand up — always rewarded
-            + forward_reward    # walk forward — only rewarded when upright
-            + goal_reward
-            - spin_penalty
-            - lateral_penalty
+            alive_bonus           # +2.0  stay alive — dominant signal
+            + upright_reward      # +1.5  be tall
+            + forward_vel_reward  # +var  move forward while upright
+            + forward_dist_reward # +var  actual displacement
+            + goal_reward         # +var  head toward waypoint
+            + electricity_cost    # -var  don't thrash joints
+            + stall_cost          # -var  don't stall joints
+            + joints_at_limit_cost# -var  don't pin joints
+            + spin_penalty        # -var  don't spin
+            + lateral_penalty     # -var  stay centred
         )
 
+        # Episode ends when torso drops below 0.3 m (humanoid has fallen)
         done = bool(pos[2] < 0.3)
 
         obs, _ = self.get_obs()
