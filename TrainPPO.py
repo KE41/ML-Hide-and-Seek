@@ -35,12 +35,12 @@ CHECKPOINT_DIR    = "checkpoints"
 BEST_MODEL_DIR    = "best_model"
 LOG_DIR           = "ppo_logs"
 TOTAL_STEPS       = 50_000_000
-N_ENVS            = 32      # 32 parallel environments - desktop pc
+N_ENVS            = 1      # 32 parallel environments - desktop pc
 MAX_EPISODE_STEPS = 2000    # FIX: forces episodes to end so Monitor logs rewards
 # ---------------------------------------------------------------------------
 
 def make_env_fn():
-    return make_env(gui=False)
+    return make_env(gui=True)
 
 def make_env(gui):
     """
@@ -60,7 +60,7 @@ def main():
     parser.add_argument("--resume", action="store_true", help="Resume from latest checkpoint")
     parser.add_argument(
         "--checkpoint",
-        default="checkpoints/humanoid_ppo_2900000_steps.zip",
+        default="checkpoints/humanoid_ppo_5200000_steps.zip",
         help="Checkpoint path to resume from",
     )
     args = parser.parse_args()
@@ -113,7 +113,7 @@ def main():
         )
 
     checkpoint_cb = CheckpointCallback(
-        save_freq   = 100_000 // N_ENVS,
+        save_freq   = 500_000 // N_ENVS, # Checkpoint save freq
         save_path   = CHECKPOINT_DIR,
         name_prefix = "humanoid_ppo",
         verbose     = 1,

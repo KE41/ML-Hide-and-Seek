@@ -33,7 +33,7 @@ class HumanoidGymEnv(gym.Env):
     # ------------------------------------------------------------------
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
-        obs = self.env.reset()          # returns np.array directly
+        obs = self.env.reset()
         return obs, {}
 
     def step(self, action):

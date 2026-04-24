@@ -209,23 +209,23 @@ class HumanoidEnv:
 
     # --- reset ----------------------------------------------------------
     def reset(self):
-        # Just reposition the existing humanoid instead of reloading from disk
-        for bid in self.all_bodies:
-            p.resetBasePositionAndOrientation(bid, self.START_POS, self.START_ORN, physicsClientId=self.cid)
-            p.resetBaseVelocity(bid, [0, 0, 0], [0, 0, 0], physicsClientId=self.cid)
+        pos, _ = p.getBasePositionAndOrientation(self.humanoid, physicsClientId=self.cid)
 
-        for j in self.joint_ids:
-            p.resetJointState(self.humanoid, j, targetValue=0.0, targetVelocity=0.0, physicsClientId=self.cid)
-
-        # Fewer warmup steps — just enough to settle
-        for _ in range(10):
-            p.stepSimulation(physicsClientId=self.cid)
-
-        for bid in self.all_bodies:
-            p.resetBaseVelocity(bid, [0, 0, 0], [0, 0, 0], physicsClientId=self.cid)
+        # Only reposition if completely flat on the ground
+        if pos[2] < 0.25:
+            p.resetBasePositionAndOrientation(
+                self.humanoid,
+                [pos[0], pos[1], 1.2],  # lift up but keep X,Y position
+                self.START_ORN,
+                physicsClientId=self.cid
+            )
+            p.resetBaseVelocity(self.humanoid, [0, 0, 0], [0, 0, 0], physicsClientId=self.cid)
+            for j in self.joint_ids:
+                p.resetJointState(self.humanoid, j, targetValue=0.0, targetVelocity=0.0, physicsClientId=self.cid)
 
         self.start_time = time.time()
-        self.prev_pos = np.array(self.START_POS, dtype=np.float64)
+        self.prev_pos = np.array(p.getBasePositionAndOrientation(self.humanoid, physicsClientId=self.cid)[0],
+                                 dtype=np.float64)
         self.current_goal_idx = 0
         self._step_count = 0
         obs, _ = self.get_obs()
@@ -293,100 +293,95 @@ class HumanoidEnv:
 
         self._update_goal(pos)
 
-        # ----------------------------------------------------------------
-        # REWARD FUNCTION
-        # Based on:
-        #   - PyBullet's own HumanoidBulletEnv (bullet3 gym_locomotion_envs.py)
-        #   - HuMam paper: 6-term reward for stability + energy efficiency
-        #   - Benchmarking PBRS paper: robust scaling via potential-based terms
-        # ----------------------------------------------------------------
-
-        # 1. ALIVE BONUS
-        # Flat bonus every step the humanoid stays upright above fall threshold.
-        # PyBullet's own humanoid env uses +1.0/step — we use +2.0 to
-        # strongly prioritise survival over everything else early in training.
-        # This is the single most important signal: just stay alive.
-        alive_bonus = 2.0 if pos[2] > 0.4 else 0.0
-
-        # 2. UPRIGHT REWARD
-        # Height-proportional reward so partial uprightness is better than
-        # fully flat. Standing humanoid torso ~1.4 m → reward up to +1.5/step.
-        # Capped at 1.0 so it can't exceed alive_bonus in magnitude.
-        upright_fraction = min(pos[2] / 1.4, 1.0)
-        upright_reward   = upright_fraction * 1.5
-
-        # 3. FORWARD VELOCITY REWARD
-        # Reward forward velocity (-Y direction) scaled by how upright the
-        # humanoid is — crawling/sliding on its face gives almost nothing.
-        # Coefficient 1.5 from PyBullet humanoid env tuning: enough to
-        # motivate walking without overshadowing the alive bonus.
-        forward_vel_reward = -vel[1] * 1.5 * upright_fraction
-
-        # 4. DISTANCE PROGRESS REWARD
-        # Incremental -Y displacement per step, also upright-gated.
-        # Coefficient 0.5: smaller than velocity reward so it supplements
-        # rather than dominates (avoids reward hacking via single big lunge).
-        forward_dist_reward = self.track_distance() * 0.5 * upright_fraction
-
-        # 5. ENERGY / ELECTRICITY COST
-        # Penalise large actions to encourage efficient, smooth movement.
-        # PyBullet uses -2.0 * |torque * velocity|; we approximate with
-        # -0.005 * sum(action^2) which is gentler but still discourages
-        # thrashing. Too large and the agent learns to do nothing.
-        electricity_cost = -0.005 * float(np.sum(np.square(action)))
-
-        # 6. STALL TORQUE COST
-        # Small penalty for applying force while joints are near-stationary
-        # (wastes energy). PyBullet uses -0.1; we match that value.
         joint_vels = np.array([
             p.getJointState(self.humanoid, j, physicsClientId=self.cid)[1] for j in self.joint_ids
         ])
-        stall_cost = -0.1 * float(np.sum(np.square(action) * (np.abs(joint_vels) < 0.1)))
 
-        # 7. JOINTS AT LIMIT COST
-        # Discourage joints being pinned at their mechanical limits (causes
-        # jerky/frozen-limb behaviour). PyBullet uses -0.1 per stuck joint.
-        joint_angles = np.array([
-            p.getJointState(self.humanoid, j, physicsClientId=self.cid)[0] for j in self.joint_ids
-        ])
-        joint_info   = [p.getJointInfo(self.humanoid, j, physicsClientId=self.cid) for j in self.joint_ids]
-        at_limit     = sum(
-            1 for k, info in enumerate(joint_info)
-            if abs(joint_angles[k]) > 0.99 * max(abs(info[8]), abs(info[9]), 1e-3)
-        )
-        joints_at_limit_cost = -0.1 * at_limit
+        # ----------------------------------------------------------------
+        # REWARD FUNCTION - Stand and walk like a human
+        # ----------------------------------------------------------------
 
-        # 8. SPIN / ANGULAR VELOCITY PENALTY
-        # Prevents the torso spinning wildly to farm forward velocity.
-        # 0.05 coefficient: light enough not to block turning, heavy enough
-        # to stop uncontrolled rotation.
-        spin_penalty = -0.05 * float(np.linalg.norm(ang_vel))
+        # Get torso orientation - extract upright direction from quaternion
+        rot_matrix = p.getMatrixFromQuaternion(orn, physicsClientId=self.cid)
+        torso_up = rot_matrix[6], rot_matrix[7], rot_matrix[8]  # third column = local up
+        upright_dot = torso_up[2]  # 1.0 = perfectly upright, 0.0 = horizontal, -1.0 = upside down
 
-        # 9. LATERAL DRIFT PENALTY
-        # Keep the humanoid near X=0 (the centreline of the map).
-        # 0.1 coefficient: gentle nudge, not a hard wall.
-        lateral_penalty = -0.1 * abs(pos[0])
+        # 1. STANDING REWARD - must be tall AND oriented upright
+        # Height alone isn't enough - robot must actually be vertical
+        # This is now the foundation signal
+        height_fraction = min(pos[2] / 1.4, 1.0)
+        upright_fraction = max(upright_dot, 0.0)  # 0 if tipped over
+        standing_reward = height_fraction * upright_fraction * 10.0  # was 3.0
 
-        # 10. GOAL PROXIMITY BONUS
-        # Small bonus for closing in on the current waypoint, upright-gated.
-        dist_to_goal = np.linalg.norm(np.array(pos) - self.get_current_goal())
-        goal_reward  = max(0.0, 5.0 - dist_to_goal) * 0.05 * upright_fraction
+        # GETTING UP REWARD - reward any upward movement when on the ground
+        prev_height = self.prev_pos[2]
+        current_height = pos[2]
+        height_delta = current_height - prev_height
+
+        # Add this - heavy penalty for being horizontal/on chest
+        horizontal_penalty = -3.0 * (1.0 - upright_fraction)
+
+        # 2. FORWARD WALKING REWARD - dominant signal, heavily weighted
+        # Only rewarded when upright - stops crawling/rolling exploit
+        forward_vel_reward = -vel[1] * 6.0 * upright_fraction
+
+        # 3. DISTANCE PROGRESS - rewards actual ground covered
+        forward_dist_reward = self.track_distance() * 3.0 * upright_fraction
+
+        # Add this - direct penalty for being on back, scales with how flat it is
+        on_back_penalty = -8.0 * (1.0 - upright_dot) if upright_dot < 0.5 else 0.0
+
+        if pos[2] < 0.8:  # only active when low to ground
+            getting_up_reward = max(height_delta, 0.0) * 20.0  # big reward for any upward progress
+        else:
+            getting_up_reward = 0.0
+
+        # LIMB ACTIVITY REWARD - reward joints being active when on the ground
+        # encourages arms and legs to push rather than go limp
+        if pos[2] < 0.8:
+            joint_activity = float(np.mean(np.abs(joint_vels)))
+            limb_activity_reward = joint_activity * 2.0
+        else:
+            limb_activity_reward = 0.0
+
+        # 5. STILL PENALTY - punish not moving even harder
+        if upright_fraction > 0.5 and abs(vel[1]) < 0.1:
+            still_penalty = -3.0  # was -1.0
+        else:
+            still_penalty = 0.0
+
+        # 4. FALL PENALTY - heavy punishment for falling, ends episode
+        fall_penalty = -10.0 if pos[2] < 0.4 else 0.0  # was -5.0
+
+        # 5. STAYING STILL PENALTY - punish zero velocity when upright
+        # Forces the robot to keep moving rather than balance in place
+        if upright_fraction > 0.7 and abs(vel[1]) < 0.1:
+            still_penalty = -1.0
+        else:
+            still_penalty = 0.0
+
+        # 6. ENERGY COST - keep but very light, don't discourage movement
+        electricity_cost = -0.001 * float(np.sum(np.square(action)))
+
+        # 7. SPIN PENALTY - stop rolling/spinning
+        spin_penalty = -0.5 * float(np.linalg.norm(ang_vel)) * (1.0 - upright_fraction)
 
         # ---- Final reward ----
         reward = (
-            alive_bonus           # +2.0  stay alive — dominant signal
-            + upright_reward      # +1.5  be tall
-            + forward_vel_reward  # +var  move forward while upright
-            + forward_dist_reward # +var  actual displacement
-            + goal_reward         # +var  head toward waypoint
-            + electricity_cost    # -var  don't thrash joints
-            + stall_cost          # -var  don't stall joints
-            + joints_at_limit_cost# -var  don't pin joints
-            + spin_penalty        # -var  don't spin
-            + lateral_penalty     # -var  stay centred
+                standing_reward  # +3.0  be tall and vertical
+                + forward_vel_reward  # +var  DOMINANT - move forward fast
+                + forward_dist_reward  # +var  DOMINANT - cover ground
+                + fall_penalty  # -5.0  don't fall
+                + still_penalty  # -1.0  don't stand still
+                + electricity_cost  # -var  light energy cost
+                + spin_penalty  # -var  don't spin/roll
+                + horizontal_penalty
+                + on_back_penalty
+                + getting_up_reward
+                + limb_activity_reward
         )
 
-        # Episode ends when torso drops below 0.3 m (humanoid has fallen)
+        # Episode ends when torso drops below 0.3 m
         done = bool(pos[2] < 0.3)
 
         obs, _ = self.get_obs()
