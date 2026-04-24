@@ -117,7 +117,7 @@ def create_environment(gui):
 # ---------------------------------------------------------------------------
 class HumanoidEnv:
 
-    START_POS = [0, 3.5, 1.3]
+    START_POS = [0, 3.5, 0.5]  # torso centre height when humanoid stands on plane.urdf
     START_ORN = [0, 0, 0, 1]
 
     GOAL_POSITIONS = [
@@ -129,10 +129,10 @@ class HumanoidEnv:
     # Physics / action scaling
     PHYSICS_HZ  = 240
     SUB_STEPS   = 4
-    MAX_FORCE   = 60      # lower = joints move more gently
+    MAX_FORCE   = 80      # enough torque to stand without launching the body
     # Actions from the policy are in [-1,1]; multiply by this to get target rad/s.
     # Lower = slower, more natural movement.
-    VEL_SCALE   = 0.5     # actions [-1,1] -> max 0.5 rad/s — slow, natural movement
+    VEL_SCALE   = 1.0     # actions [-1,1] -> max 1 rad/s — controlled joint movement
 
     def __init__(self, cid, world_body_count):
         self.cid              = cid
@@ -168,12 +168,7 @@ class HumanoidEnv:
         self.all_bodies = list(humanoid_bodies)
         self.humanoid   = humanoid_bodies[-1]  # torso
 
-        # Place every sub-body at the start position immediately after load
-        for bid in self.all_bodies:
-            p.resetBasePositionAndOrientation(bid, self.START_POS, self.START_ORN)
-            p.resetBaseVelocity(bid, [0,0,0], [0,0,0])
-
-        # Collect controllable joint IDs from the torso body
+        # Collect controllable joint IDs first (needed before settling)
         self.joint_ids = []
         for i in range(p.getNumJoints(self.humanoid)):
             info = p.getJointInfo(self.humanoid, i)
@@ -181,6 +176,33 @@ class HumanoidEnv:
                 self.joint_ids.append(i)
 
         print(f"Controllable joints: {len(self.joint_ids)}")
+
+        # Place every sub-body at the start position
+        for bid in self.all_bodies:
+            p.resetBasePositionAndOrientation(bid, self.START_POS, self.START_ORN)
+            p.resetBaseVelocity(bid, [0, 0, 0], [0, 0, 0])
+
+        # Zero all joints so the humanoid starts in a neutral T-pose
+        for j in self.joint_ids:
+            p.resetJointState(self.humanoid, j, targetValue=0.0, targetVelocity=0.0)
+
+        # Hold joints at zero and let physics settle for a moment so the
+        # internal MJCF constraints resolve before we hand control to the policy.
+        # Without this the constraint solver applies a large impulse on frame 1
+        # that launches the humanoid into the air.
+        for j in self.joint_ids:
+            p.setJointMotorControl2(
+                self.humanoid, j,
+                controlMode=p.POSITION_CONTROL,
+                targetPosition=0.0,
+                force=500   # high force just for settling, not used during training
+            )
+        for _ in range(120):   # 120 steps at 240 Hz = 0.5 seconds to settle
+            p.stepSimulation()
+
+        # Now zero velocity again after settling
+        for bid in self.all_bodies:
+            p.resetBaseVelocity(bid, [0, 0, 0], [0, 0, 0])
 
     # --- goal helpers ---------------------------------------------------
     def get_goal_positions(self):
@@ -280,29 +302,35 @@ class HumanoidEnv:
 
         self._update_goal(pos)
 
-        # Forward progress (-Y direction)
-        forward_reward  = -vel[1] * 2.0
-        forward_reward += self.track_distance() * 0.5
+        # --- UPRIGHT REWARD (most important — teaches standing before walking) ---
+        # The humanoid torso is ~1.4m tall when standing. Reward height directly
+        # so the agent learns that being tall is always better than lying flat.
+        # Clipped to [0, 1] so a standing robot gets +3.0 every step.
+        upright_reward = min(pos[2] / 1.4, 1.0) * 3.0
 
-        # Fall penalty
-        height_penalty = 0.0
-        if pos[2] < 0.8:
-            height_penalty = max(0, 0.8 - pos[2]) * 5.0 + max(0, -vel[2]) * 2.0
+        # --- FORWARD PROGRESS (secondary — only useful once it can stand) ---
+        # Reward moving in -Y direction, but scale by how upright it is so that
+        # sliding on its face doesn't give the same reward as walking upright.
+        upright_fraction = min(pos[2] / 1.4, 1.0)          # 0 when flat, 1 when standing
+        forward_reward   = -vel[1] * 2.0 * upright_fraction
+        forward_reward  += self.track_distance() * 0.5 * upright_fraction
 
-        lateral_penalty   = abs(pos[0]) * 0.3
-        stability_penalty = abs(vel[0]) * 0.5
-        momentum_bonus    = -abs(vel[0]) * 0.1
+        # --- STABILITY (penalise spinning / falling sideways) ---
+        # Angular velocity penalty keeps the torso from spinning wildly
+        _, ang_vel = p.getBaseVelocity(self.humanoid)
+        spin_penalty     = np.linalg.norm(ang_vel) * 0.1
+        lateral_penalty  = abs(pos[0]) * 0.2   # stay near X=0
 
+        # --- GOAL PROXIMITY ---
         dist_to_goal = np.linalg.norm(np.array(pos) - self.get_current_goal())
-        goal_reward  = max(0.0, 5.0 - dist_to_goal) * 0.2
+        goal_reward  = max(0.0, 5.0 - dist_to_goal) * 0.1 * upright_fraction
 
         reward = (
-            forward_reward
+            upright_reward      # stand up — always rewarded
+            + forward_reward    # walk forward — only rewarded when upright
             + goal_reward
-            - height_penalty
+            - spin_penalty
             - lateral_penalty
-            - stability_penalty
-            + momentum_bonus
         )
 
         done = bool(pos[2] < 0.3)
