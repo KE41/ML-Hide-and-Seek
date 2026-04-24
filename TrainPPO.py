@@ -10,7 +10,6 @@ Run:
     python TrainPPO.py --resume       # continue from last checkpoint
 """
 
-#pip install stablebaseline3 + [extra]
 #pip install torch-directml
 # pip install tensorboard
 # pip install stable-baselines3[extra]
@@ -22,57 +21,82 @@ import argparse
 import os
 
 from stable_baselines3 import PPO
-from stable_baselines3.common.callbacks import CheckpointCallback
-from stable_baselines3.common.env_checker import check_env
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.env_util import make_vec_env
+from gymnasium.wrappers import TimeLimit
+from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
+from stable_baselines3.common.vec_env import SubprocVecEnv
+from functools import partial
 
 from GymWrapper import HumanoidGymEnv
 
 # ---------------------------------------------------------------------------
-CHECKPOINT_DIR = "checkpoints"
-BEST_MODEL_DIR = "best_model"
-LOG_DIR        = "ppo_logs"
-TOTAL_STEPS    = 50_000_000
-N_ENVS         = 4   # parallel environments — remove for hide and seek
+CHECKPOINT_DIR    = "checkpoints"
+BEST_MODEL_DIR    = "best_model"
+LOG_DIR           = "ppo_logs"
+TOTAL_STEPS       = 50_000_000
+N_ENVS            = 32      # 32 parallel environments - desktop pc
+MAX_EPISODE_STEPS = 2000    # FIX: forces episodes to end so Monitor logs rewards
 # ---------------------------------------------------------------------------
+
+def make_env_fn():
+    return make_env(gui=False)
+
+def make_env(gui):
+    """
+    Wrap in TimeLimit FIRST so episodes terminate after MAX_EPISODE_STEPS,
+    then Monitor so SB3 can log ep_rew_mean to TensorBoard.
+    Without TimeLimit, if the robot never falls, episodes never end and
+    TensorBoard shows nothing.
+    """
+    env = HumanoidGymEnv(gui=gui)
+    env = TimeLimit(env, max_episode_steps=MAX_EPISODE_STEPS)
+    env = Monitor(env)
+    return env
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--resume", action="store_true", help="Resume from latest checkpoint")
+    parser.add_argument(
+        "--checkpoint",
+        default="checkpoints/humanoid_ppo_2900000_steps.zip",
+        help="Checkpoint path to resume from",
+    )
     args = parser.parse_args()
 
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
     os.makedirs(BEST_MODEL_DIR, exist_ok=True)
     os.makedirs(LOG_DIR,        exist_ok=True)
 
-    # Run N_ENVS environments in parallel for faster step collection
-    env = make_vec_env(lambda: HumanoidGymEnv(gui=False), n_envs=N_ENVS)
+    # FIX: gui=False during training — GUI slows everything down and can
+    # interfere with logging flushes. Use RunPolicy.py to watch results.
+
+    env = make_vec_env(
+        make_env_fn,
+        n_envs=N_ENVS,
+        vec_env_cls=SubprocVecEnv  # add this
+    )
 
     policy_kwargs = dict(
         net_arch      = dict(pi=[512, 512], vf=[512, 512]),
         activation_fn = __import__("torch").nn.Tanh,
     )
 
+    # FIX: resume block no longer calls learn() — the single learn() call
+    # at the bottom handles both fresh and resumed runs.
     if args.resume:
-        checkpoints = sorted(
-            [f for f in os.listdir(CHECKPOINT_DIR) if f.endswith(".zip")],
-            key=lambda f: int(f.split("_")[-2]) if f.split("_")[-2].isdigit() else 0
+        print(f"Resuming from {args.checkpoint}")
+        model = PPO.load(
+            args.checkpoint,
+            env             = env,
+            tensorboard_log = LOG_DIR,  # FIX: must re-attach log dir on load
         )
-        if checkpoints:
-            latest = os.path.join(CHECKPOINT_DIR, checkpoints[-1])
-            print(f"Resuming from {latest}")
-            model = PPO.load(latest, env=env, tensorboard_log=LOG_DIR)
-        else:
-            print("No checkpoint found — starting fresh.")
-            args.resume = False
-
-    if not args.resume:
+    else:
         model = PPO(
             policy          = "MlpPolicy",
             env             = env,
-            device          = "cpu",        # ← string "cpu", not the torch.cpu module
+            device          = "cpu",
             verbose         = 1,
             tensorboard_log = LOG_DIR,
             n_steps         = 4096,
@@ -89,7 +113,7 @@ def main():
         )
 
     checkpoint_cb = CheckpointCallback(
-        save_freq   = 100_000,
+        save_freq   = 100_000 // N_ENVS,
         save_path   = CHECKPOINT_DIR,
         name_prefix = "humanoid_ppo",
         verbose     = 1,
@@ -101,7 +125,7 @@ def main():
     model.learn(
         total_timesteps     = TOTAL_STEPS,
         callback            = [checkpoint_cb],
-        reset_num_timesteps = not args.resume,
+        reset_num_timesteps = not args.resume,  # FIX: True on fresh run, False on resume
         progress_bar        = True,
     )
 
@@ -110,5 +134,11 @@ def main():
 
 
 # Run first, then run RunPolicy.py to watch the result.
+
+# Use:
+# python TrainPPO.py --resume
+# to resume from default checkpoint, or:
+# python TrainPPO.py --resume --checkpoint checkpoints/humanoid_ppo_500000_steps.zip
+
 if __name__ == "__main__":
     main()
