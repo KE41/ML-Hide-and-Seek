@@ -1,0 +1,178 @@
+Use this as a clear implementation prompt for your project. It is structured so the system modifies only what is necessary and integrates into your existing `humanoid3` environment.
+
+---
+
+Create and integrate motion imitation (reference tracking) into my existing PyBullet humanoid environment (`humanoid3.py`).
+
+Context:
+
+* I already have a working PPO setup and environment
+* I have a reference motion file: `humanoid_walk.txt` in the project root
+* Do not rewrite the entire environment — only modify what is required
+* Keep physics, action application, observation, and training loop unchanged unless necessary
+
+Goal:
+Replace the current reward with a motion imitation reward so the humanoid learns to walk by matching a reference trajectory instead of discovering locomotion from scratch
+
+---
+
+Requirements:
+
+1. Load reference motion
+
+* Implement a loader for `humanoid_walk.txt`
+* Assume it contains per-frame joint angles (one frame per line)
+* Store as: `self.ref_motion` → shape [num_frames, num_joints]
+* Normalize or clip if needed to match joint limits
+* Add:
+
+  * `self.motion_length`
+  * `self.phase` (float, range [0, 1))
+
+---
+
+2. Phase tracking
+
+* Increment phase every step:
+
+  * `self.phase += 1 / self.motion_length`
+  * wrap with modulo (phase %= 1.0)
+
+* Compute current reference frame:
+
+  * `frame_idx = int(self.phase * self.motion_length)`
+
+---
+
+3. Pose extraction
+
+* Get current joint angles:
+
+  * already available via `p.getJointState`
+
+* Build vector:
+
+  * `current_pose = np.array([...])`
+
+* Get reference pose:
+
+  * `ref_pose = self.ref_motion[frame_idx]`
+
+---
+
+4. Motion imitation reward (core change)
+
+Replace your entire reward block with:
+
+* Pose matching term (main signal):
+
+  * `pose_error = sum((current_pose - ref_pose)^2)`
+  * `pose_reward = exp(-k_pose * pose_error)`
+  * use `k_pose ≈ 2–5`
+
+* Velocity matching (optional but recommended):
+
+  * estimate joint velocity difference
+  * `vel_reward = exp(-k_vel * vel_error)`
+
+* Forward velocity term (small):
+
+  * keep: `forward_reward = -vel[1] * 0.5`
+
+* Control cost (small penalty):
+
+  * `0.01 * sum(action^2)`
+
+Final reward:
+
+reward =
+pose_reward
++ 0.5 * vel_reward
++ forward_reward
+- control_cost
+
+---
+
+5. Remove old reward terms completely
+
+Delete:
+
+* alive bonus
+* upright reward
+* distance reward
+* stall penalty
+* joint limit penalty
+* spin penalty
+* lateral penalty
+* goal reward
+
+These conflict with imitation learning
+
+---
+
+6. Reset logic
+
+In `reset()`:
+
+* reset `self.phase = 0.0`
+* optionally randomise phase:
+
+  * `self.phase = np.random.rand()`
+
+This improves robustness
+
+---
+
+7. Episode termination
+
+Keep only:
+
+* `done = pos[2] < 0.3`
+
+Do not add posture-based shaping
+
+---
+
+8. File integration rules
+
+* Modify only:
+
+  * `__init__` (to load motion)
+  * `reset` (phase init)
+  * `step` (reward + phase update)
+
+* Do NOT change:
+
+  * PPO setup
+  * action space
+  * physics stepping
+  * observation structure (unless needed for pose)
+
+---
+
+9. Assumptions
+
+* Number of joints in `humanoid_walk.txt` matches `self.joint_ids`
+* If mismatch:
+
+  * truncate or align indices
+  * do not redesign system
+
+---
+
+10. Output expectations
+
+* Agent should quickly learn to mimic walking motion
+* No more “bum shuffling”
+* Reward should stabilise around pose tracking quality
+
+---
+
+If needed, include minimal helper functions:
+
+* `load_motion_file(path)`
+* `get_current_pose()`
+
+Do not introduce external dependencies beyond numpy and pybullet.
+
+
