@@ -16,6 +16,8 @@ Run:
 # pip install stable-baselines3[extra]
 # Ensure ur using python 3.10.11
 
+# to see data run tensorboard --logdir ppo_logs on terminal in folder
+
 import argparse
 import os
 
