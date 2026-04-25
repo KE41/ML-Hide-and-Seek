@@ -14,9 +14,9 @@ class HumanoidGymEnv(gym.Env):
 
     metadata = {"render_modes": ["human"]}
 
-    def __init__(self, gui: bool = False):
+    def __init__(self, gui: bool = False, motion_path: str = "humanoid3d_walk.txt"):
         super().__init__()
-        self.env = create_environment(gui=gui)
+        self.env = create_environment(gui=gui, motion_path=motion_path)
 
         # Derive spaces from a live observation
         obs, _ = self.env.get_obs()
@@ -43,11 +43,11 @@ class HumanoidGymEnv(gym.Env):
         return obs, float(reward), terminated, truncated, {}
 
     def render(self):
-        pass  # GUI is toggled at construction time
+        pass
 
     def close(self):
         try:
             import pybullet as p
-            p.disconnect()
+            p.disconnect(self.env.cid)
         except Exception:
             pass
