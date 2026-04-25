@@ -387,40 +387,34 @@ class HumanoidEnv:
         # Run until ep_rew_mean consistently above 5.0, then switch STAGE=2
         # ----------------------------------------------------------------
         if STAGE == 1:
-            # Standing reward — tall AND vertical
-            standing_reward = height_fraction * upright_fraction * 5.0
 
-            # Getting up reward — reward any upward movement when low
-            prev_height  = self.prev_pos[2]
-            height_delta = pos[2] - prev_height
-            getting_up   = max(height_delta, 0.0) * 20.0 if pos[2] < 1.0 else 0.0
+            # upright orientation (MOST IMPORTANT)
+            upright_reward = 5.0 * max(upright_fraction, 0.0)
 
-            # Limb activity when on the ground — encourages pushing up
+            # height reward (strong signal, but secondary)
+            height_reward = 4.0 * min(pos[2] / 1.3, 1.0)
+
+            # penalise falling immediately (hard constraint)
+            fall_penalty = -8.0 if pos[2] < 0.4 else 0.0
+
+            # penalise angular motion (stability enforcement)
+            stability_penalty = -0.5 * float(np.linalg.norm(ang_vel))
+
+            # penalise excessive joint motion (prevents shaking strategy)
             joint_vels = np.array([
                 p.getJointState(self.humanoid, j, physicsClientId=self.cid)[1]
                 for j in self.joint_ids
             ])
-            limb_activity = float(np.mean(np.abs(joint_vels))) * 1.0 if pos[2] < 0.8 else 0.0
-
-            # Flat on back penalty — scales with how horizontal the torso is
-            flat_penalty = -3.0 * (1.0 - upright_fraction)
-
-            # Fall penalty
-            fall_penalty = -5.0 if pos[2] < 0.4 else 0.0
-
-            # Spin penalty — discourage spinning in place
-            spin_penalty = -0.3 * float(np.linalg.norm(ang_vel))
+            energy_penalty = -0.02 * float(np.mean(np.square(joint_vels)))
 
             reward = (
-                standing_reward
-                + getting_up
-                + limb_activity
-                + flat_penalty
-                + fall_penalty
-                + spin_penalty
+                    upright_reward +
+                    height_reward +
+                    fall_penalty +
+                    stability_penalty +
+                    energy_penalty
             )
 
-            # End episode only on complete collapse
             done = bool(pos[2] < 0.3)
 
         # ----------------------------------------------------------------
