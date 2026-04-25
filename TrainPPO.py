@@ -31,7 +31,7 @@ CHECKPOINT_DIR    = "checkpoints"
 BEST_MODEL_DIR    = "best_model"
 LOG_DIR           = "ppo_logs"
 TOTAL_STEPS       = 50_000_000
-N_ENVS            = 1      # 32 for desktop pc
+N_ENVS            = 16      # 32 for desktop pc
 MAX_EPISODE_STEPS = 2000    # episodes end after this many steps
 MOTION_PATH       = "humanoid3d_walk.txt"  # must be in project folder
 # ---------------------------------------------------------------------------
@@ -42,7 +42,7 @@ def make_env_fn():
     Each parallel env gets its own PyBullet instance and its own MotionClip.
     TimeLimit forces episodes to end so Monitor can log ep_rew_mean.
     """
-    env = HumanoidGymEnv(gui=True, motion_path=MOTION_PATH)
+    env = HumanoidGymEnv(gui=False, motion_path=MOTION_PATH)
     env = TimeLimit(env, max_episode_steps=MAX_EPISODE_STEPS)
     env = Monitor(env)
     return env
