@@ -260,11 +260,11 @@ class HumanoidEnv:
     def reset(self):
         pos, _ = p.getBasePositionAndOrientation(self.humanoid, physicsClientId=self.cid)
 
-        # Only lift if completely on the ground — keep X, Y position
-        if pos[2] < 0.3:
+        # Reset position AND orientation on fall so it spawns upright, not face-down
+        if pos[2] < 0.5:
             p.resetBasePositionAndOrientation(
                 self.humanoid,
-                [pos[0], pos[1], 1.2],
+                self.START_POS,
                 self.START_ORN,
                 physicsClientId=self.cid
             )
@@ -388,34 +388,40 @@ class HumanoidEnv:
         # ----------------------------------------------------------------
         if STAGE == 1:
 
-            # upright orientation (MOST IMPORTANT)
-            upright_reward = 5.0 * max(upright_fraction, 0.0)
+            # --- rewards from original branch (was producing balance behaviour) ---
 
-            # height reward (strong signal, but secondary)
-            height_reward = 4.0 * min(pos[2] / 1.3, 1.0)
+            # A. Forward progress reward (keep Y velocity, this created upright pressure)
+            forward_reward = vel[1] * 1.0
 
-            # penalise falling immediately (hard constraint)
-            fall_penalty = -8.0 if pos[2] < 0.4 else 0.0
+            # B. Height penalty — strong signal that kept the robot tall
+            height_penalty = 0.0
+            if pos[2] < 1.2:
+                low_height_val     = max(0, 1.2 - pos[2]) * 5.0
+                fall_speed_penalty = max(0, -vel[2]) * 2.0
+                height_penalty     = low_height_val + fall_speed_penalty
 
-            # penalise angular motion (stability enforcement)
-            stability_penalty = -0.5 * float(np.linalg.norm(ang_vel))
+            # C. Lateral deviation penalty
+            lateral_penalty = abs(pos[0]) * 0.5
 
-            # penalise excessive joint motion (prevents shaking strategy)
-            joint_vels = np.array([
-                p.getJointState(self.humanoid, j, physicsClientId=self.cid)[1]
-                for j in self.joint_ids
-            ])
-            energy_penalty = -0.02 * float(np.mean(np.square(joint_vels)))
+            # D. Stability — penalise side-to-side velocity
+            stability_penalty = abs(vel[0]) * 0.5
+
+            # E. Momentum bonus
+            momentum_bonus = -abs(vel[0]) * 0.1
+
+            # F. Survival bonus — small reward each step for staying up
+            survival_bonus = 0.1
 
             reward = (
-                    upright_reward +
-                    height_reward +
-                    fall_penalty +
-                    stability_penalty +
-                    energy_penalty
+                forward_reward
+                - height_penalty
+                - lateral_penalty
+                - stability_penalty
+                + momentum_bonus
+                + survival_bonus
             )
 
-            done = bool(pos[2] < 0.3)
+            done = bool(pos[2] < 0.5)
 
         # ----------------------------------------------------------------
         # STAGE 2 REWARD — DeepMimic motion imitation (Peng et al. 2018)
