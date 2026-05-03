@@ -1,130 +1,172 @@
 ﻿"""
-Train the humanoid with PPO (Stable-Baselines3) using motion imitation.
-The humanoid learns to walk by matching humanoid3d_walk.txt reference poses.
-
-Install deps once:
-    pip install stable-baselines3[extra] gymnasium
+Continuous standing trainer — Stage 1.
+Uses the same continuous-loop style as the original main.py:
+  - No episode time limit
+  - Only resets on fall (done=True from Environment)
+  - Gradient update every UPDATE_EVERY steps
+  - Checkpoint saves and resumes automatically
 
 Run:
     python TrainPPO.py
-    python TrainPPO.py --resume --resume-steps 5000000
-
-Watch tensorboard:
-    tensorboard --logdir ppo_logs
+    python TrainPPO.py --resume
 """
 
 import argparse
 import os
-from functools import partial
+import time
+import numpy as np
+import torch
+import torch.optim as optim
 
-from stable_baselines3 import PPO
-from stable_baselines3.common.callbacks import CheckpointCallback
-from stable_baselines3.common.monitor import Monitor
-from stable_baselines3.common.env_util import make_vec_env
-from stable_baselines3.common.vec_env import SubprocVecEnv
-from gymnasium.wrappers import TimeLimit
+from Environment import create_environment
 
-from GymWrapper import HumanoidGymEnv
-
-# ---------------------------------------------------------------------------
-CHECKPOINT_DIR    = "checkpoints"
-BEST_MODEL_DIR    = "best_model"
-LOG_DIR           = "ppo_logs"
-TOTAL_STEPS       = 50_000_000
-N_ENVS            = 1      # 32 for desktop pc
-MAX_EPISODE_STEPS = 2000    # episodes end after this many steps
-MOTION_PATH       = "humanoid3d_walk.txt"  # must be in project folder
-# ---------------------------------------------------------------------------
+CHECKPOINT_PATH = "stand_checkpoint.pt"
+UPDATE_EVERY    = 512   # steps between gradient updates
+TOTAL_STEPS     = 50_000_000
+GUI             = True
 
 
-def make_env_fn():
-    """
-    Each parallel env gets its own PyBullet instance and its own MotionClip.
-    TimeLimit forces episodes to end so Monitor can log ep_rew_mean.
-    """
-    env = HumanoidGymEnv(gui=True, motion_path=MOTION_PATH)
-    env = TimeLimit(env, max_episode_steps=MAX_EPISODE_STEPS)
-    env = Monitor(env)
-    return env
+# ------------------------------------------------------------------
+# Minimal inline policy — same architecture as original PyTorchPolicy
+# ------------------------------------------------------------------
+import torch.nn as nn
+import torch.distributions as D
 
+class PolicyNet(nn.Module):
+    def __init__(self, obs_dim, act_dim):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(obs_dim, 256),
+            nn.Tanh(),
+            nn.Linear(256, 256),
+            nn.Tanh(),
+            nn.Linear(256, act_dim),
+        )
+        self.log_std = nn.Parameter(torch.zeros(act_dim))
+
+    def forward(self, x):
+        mean = self.net(x)
+        std  = torch.exp(self.log_std.clamp(-3, 1))
+        return mean, std
+
+    def sample(self, x):
+        mean, std = self.forward(x)
+        dist      = D.Normal(mean, std)
+        action    = dist.sample()
+        log_prob  = dist.log_prob(action).sum(dim=-1)
+        return action, log_prob
+
+
+# ------------------------------------------------------------------
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--resume", action="store_true")
-    parser.add_argument(
-        "--checkpoint",
-        default="checkpoints/humanoid_ppo_1000000_steps.zip",
-        help="Checkpoint to resume from",
-    )
-    parser.add_argument(
-        "--resume-steps",
-        type=int,
-        default=5_000_000,
-        help="Steps already trained — fixes progress bar",
-    )
     args = parser.parse_args()
 
-    os.makedirs(CHECKPOINT_DIR, exist_ok=True)
-    os.makedirs(BEST_MODEL_DIR, exist_ok=True)
-    os.makedirs(LOG_DIR,        exist_ok=True)
+    env = create_environment(gui=GUI)
 
-    env = make_vec_env(make_env_fn, n_envs=N_ENVS, vec_env_cls=SubprocVecEnv)
+    # get_obs returns (array, dict) in this branch
+    obs_raw, _ = env.get_obs()
+    obs_dim    = len(obs_raw)
+    act_dim    = len(env.joint_ids)
+    print(f"obs_dim={obs_dim}  act_dim={act_dim}")
 
-    checkpoint_cb = CheckpointCallback(
-        save_freq   = 500_000 // N_ENVS,
-        save_path   = CHECKPOINT_DIR,
-        name_prefix = "humanoid_ppo",
-        verbose     = 1,
-    )
+    policy    = PolicyNet(obs_dim, act_dim)
+    optimizer = optim.Adam(policy.parameters(), lr=3e-4)
 
-    # Larger network for motion imitation — needs to learn complex pose matching
-    policy_kwargs = dict(
-        net_arch      = dict(pi=[1024, 512], vf=[1024, 512]),
-        activation_fn = __import__("torch").nn.Tanh,
-    )
+    start_step = 0
+    falls      = 0
 
-    if args.resume:
-        print(f"Resuming from {args.checkpoint}")
-        model = PPO.load(
-            args.checkpoint,
-            env             = env,
-            tensorboard_log = LOG_DIR,
-        )
-        steps_to_run = TOTAL_STEPS - args.resume_steps
+    if args.resume and os.path.exists(CHECKPOINT_PATH):
+        ckpt = torch.load(CHECKPOINT_PATH, weights_only=True)
+        policy.load_state_dict(ckpt["policy"])
+        optimizer.load_state_dict(ckpt["optimizer"])
+        start_step = ckpt.get("step", 0)
+        falls      = ckpt.get("falls", 0)
+        print(f"Resumed from step {start_step}, falls so far: {falls}")
     else:
-        model = PPO(
-            policy          = "MlpPolicy",
-            env             = env,
-            device          = "cpu",
-            verbose         = 1,
-            tensorboard_log = LOG_DIR,
-            n_steps         = 4096,
-            batch_size      = 256,
-            n_epochs        = 10,
-            learning_rate   = 3e-4,
-            ent_coef        = 0.01,    # slightly higher for motion imitation exploration
-            clip_range      = 0.2,
-            gae_lambda      = 0.95,
-            gamma           = 0.99,
-            vf_coef         = 0.5,
-            max_grad_norm   = 0.5,
-            policy_kwargs   = policy_kwargs,
-        )
-        steps_to_run = TOTAL_STEPS
+        print("Starting fresh.")
 
-    print(f"Training for {steps_to_run:,} steps across {N_ENVS} parallel envs …")
-    print(f"Motion file: {MOTION_PATH}")
-    print("Watch live:  tensorboard --logdir ppo_logs\n")
+    gamma      = 0.99
+    log_probs  = []
+    rewards    = []
+    total_step = start_step
 
-    model.learn(
-        total_timesteps     = steps_to_run,
-        callback            = [checkpoint_cb],
-        reset_num_timesteps = not args.resume,
-        progress_bar        = True,
-    )
+    # First obs
+    obs = env.reset()
 
-    model.save("humanoid_ppo_final")
-    print("Done — saved humanoid_ppo_final.zip")
+    while total_step < TOTAL_STEPS:
+
+        obs_tensor        = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
+        action, log_prob  = policy.sample(obs_tensor)
+        action            = action.squeeze(0)
+        log_prob          = log_prob.squeeze(0)
+        action_np         = torch.clamp(action, -1.0, 1.0).detach().numpy()
+
+        if GUI:
+            time.sleep(1.0 / 240.0)
+
+        obs, reward, done = env.step(action_np)
+
+        log_probs.append(log_prob)
+        rewards.append(reward)
+        total_step += 1
+
+        # Only reset on actual fall — continuous otherwise
+        if done:
+            falls += 1
+            obs = env.reset()
+            print(f"  Fall #{falls} at step {total_step}")
+
+        # ----------------------------------------------------------
+        # Gradient update every UPDATE_EVERY steps
+        # ----------------------------------------------------------
+        if len(rewards) >= UPDATE_EVERY:
+            returns = []
+            G = 0.0
+            for r in reversed(rewards):
+                G = r + gamma * G
+                returns.insert(0, G)
+
+            returns_t  = torch.tensor(returns, dtype=torch.float32)
+            returns_t  = (returns_t - returns_t.mean()) / (returns_t.std() + 1e-8)
+
+            log_probs_t = torch.stack(log_probs)
+            advantages  = returns_t - returns_t.mean()
+
+            # Entropy bonus decays over time: explore early, exploit later
+            entropy_coeff = max(0.0001, 0.01 * (0.999 ** (total_step / UPDATE_EVERY)))
+            entropy_bonus = entropy_coeff * log_probs_t.detach().mean()
+            loss = -(log_probs_t * advantages).mean() + entropy_bonus
+
+            optimizer.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(policy.parameters(), max_norm=0.5)
+            optimizer.step()
+
+            avg_r = sum(rewards) / len(rewards)
+            print(
+                f"Step: {total_step:>8} | "
+                f"Avg reward: {avg_r:>7.3f} | "
+                f"Falls: {falls} | "
+                f"Entropy coeff: {entropy_coeff:.5f}"
+            )
+
+            log_probs = []
+            rewards   = []
+
+        # Checkpoint every 10k steps
+        if total_step % 10_000 == 0:
+            torch.save({
+                "policy":    policy.state_dict(),
+                "optimizer": optimizer.state_dict(),
+                "step":      total_step,
+                "falls":     falls,
+            }, CHECKPOINT_PATH)
+            print(f"  → Checkpoint saved at step {total_step}")
+
+    print("Training complete.")
 
 
 if __name__ == "__main__":
