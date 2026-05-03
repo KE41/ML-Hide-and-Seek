@@ -1,245 +1,212 @@
 ﻿"""
-Continuous standing/walking trainer.
-- No entropy coefficient
-- Uses motion file directly for imitation reward
-- Only resets on fall
-- Gradient update every UPDATE_EVERY steps
+Train the humanoid with PPO (Stable-Baselines3) using motion imitation.
+The humanoid learns to walk by matching humanoid3d_walk.txt reference poses.
+
+Install deps once:
+    pip install stable-baselines3[extra] gymnasium pybullet
 
 Run:
     python TrainPPO.py
     python TrainPPO.py --resume
+    python TrainPPO.py --resume --checkpoint checkpoints/humanoid_ppo_5000000_steps.zip
+
+Watch TensorBoard:
+    tensorboard --logdir ppo_logs
 """
 
 import argparse
 import os
-import time
-import json
-import numpy as np
-import torch
-import torch.nn as nn
-import torch.distributions as D
-import torch.optim as optim
-import pybullet as p
 
-from Environment import create_environment, STAGE
+from stable_baselines3 import PPO
+from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
+from stable_baselines3.common.monitor import Monitor
+from stable_baselines3.common.env_util import make_vec_env
+from stable_baselines3.common.vec_env import SubprocVecEnv, DummyVecEnv
+from gymnasium.wrappers import TimeLimit
 
-CHECKPOINT_PATH = "stand_checkpoint.pt"
-UPDATE_EVERY    = 512
-TOTAL_STEPS     = 50_000_000
-GUI             = True
-MOTION_PATH     = "humanoid3d_walk.txt"
+from GymWrapper import HumanoidGymEnv
 
+# ===========================================================================
+# PARAMETERS — edit these before running
+# ===========================================================================
 
-# ------------------------------------------------------------------
-class PolicyNet(nn.Module):
-    def __init__(self, obs_dim, act_dim):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(obs_dim, 256),
-            nn.Tanh(),
-            nn.Linear(256, 256),
-            nn.Tanh(),
-            nn.Linear(256, act_dim),
-        )
-        self.log_std = nn.Parameter(torch.zeros(act_dim))
+MOTION_PATH       = "humanoid3d_walk.txt"   # reference motion file
 
-    def forward(self, x):
-        mean = self.net(x)
-        std  = torch.exp(self.log_std.clamp(-3, 1))
-        return mean, std
+TOTAL_STEPS       = 50_000_000              # total env steps to train for
+N_ENVS            = 1                       # 32 for not use 1 for GUI)
+MAX_EPISODE_STEPS = 2_000                   # truncate episodes after this many steps
 
-    def sample(self, x):
-        mean, std = self.forward(x)
-        dist      = D.Normal(mean, std)
-        action    = dist.sample()
-        log_prob  = dist.log_prob(action).sum(dim=-1)
-        return action, log_prob
+# PPO hyperparameters
+N_STEPS           = 4_096                   # rollout buffer steps per env per update
+BATCH_SIZE        = 256                     # minibatch size
+N_EPOCHS          = 10                      # passes over rollout buffer per update
+LEARNING_RATE     = 3e-4
+ENT_COEF          = 0.01                    # entropy bonus (helps exploration for motion imitation)
+CLIP_RANGE        = 0.2
+GAE_LAMBDA        = 0.95
+GAMMA             = 0.99
+VF_COEF           = 0.5
+MAX_GRAD_NORM     = 0.5
 
+# Network architecture
+POLICY_NET_ARCH   = dict(pi=[1024, 512], vf=[1024, 512])
 
-# ------------------------------------------------------------------
-class MotionImitationReward:
-    """
-    Reads humanoid3d_walk.txt and computes a pose-matching reward
-    each step by comparing actual joint angles to the reference frame.
+# Paths
+CHECKPOINT_DIR    = "checkpoints"
+BEST_MODEL_DIR    = "best_model"
+LOG_DIR           = "ppo_logs"
+FINAL_MODEL_PATH  = "humanoid_ppo_final"
+CHECKPOINT_FREQ   = 500_000                 # save a checkpoint every N steps
 
-    The file stores quaternions per joint (4 floats each).
-    We convert to a single scalar per joint using the scalar (w) component
-    so it can be compared against PyBullet's 1-DOF joint angles.
-    """
-
-    def __init__(self, path: str, joint_ids: list, cid: int, humanoid_id: int):
-        with open(path, "r") as f:
-            data = json.load(f)
-
-        frames = data["Frames"]
-        self.frame_duration = frames[0][0]
-        # columns 1-7 are root pos+quat, columns 8+ are joint data
-        self.raw_frames     = np.array([frame[8:] for frame in frames], dtype=np.float32)
-        self.num_frames     = len(self.raw_frames)
-        self.total_duration = self.num_frames * self.frame_duration
-
-        self.joint_ids  = joint_ids
-        self.cid        = cid
-        self.humanoid   = humanoid_id
-        self.elapsed    = 0.0
-
-        # Each joint in DeepMimic uses 4 floats (quaternion).
-        # We extract just the w component (index 0 of each group of 4)
-        # as a proxy scalar angle for comparison.
-        n_joints   = len(joint_ids)
-        refs       = []
-        for frame in self.raw_frames:
-            frame_refs = []
-            for i in range(n_joints):
-                base = i * 4
-                if base < len(frame):
-                    # w component of quaternion — ranges -1 to 1, same as joint angle range
-                    frame_refs.append(float(frame[base]))
-                else:
-                    frame_refs.append(0.0)
-            refs.append(frame_refs)
-
-        self.joint_refs = np.array(refs, dtype=np.float32)  # [num_frames, n_joints]
-        print(f"[MotionImitation] {self.num_frames} frames | "
-              f"{self.total_duration:.2f}s total | "
-              f"{n_joints} joints tracked")
-
-    def reset(self):
-        self.elapsed = 0.0
-
-    def step(self, dt: float) -> float:
-        """Advance clock and return imitation reward for current joint state."""
-        self.elapsed += dt
-
-        # Get reference frame at current time (looping)
-        t      = (self.elapsed % self.total_duration) / self.frame_duration
-        idx_lo = int(t) % self.num_frames
-        idx_hi = (idx_lo + 1) % self.num_frames
-        alpha  = t - int(t)
-        ref    = (1.0 - alpha) * self.joint_refs[idx_lo] + alpha * self.joint_refs[idx_hi]
-
-        # Get actual joint angles from sim
-        actual = np.array([
-            p.getJointState(self.humanoid, j, physicsClientId=self.cid)[0]
-            for j in self.joint_ids
-        ], dtype=np.float32)
-
-        # Exponential kernel — same as DeepMimic paper
-        error  = np.sum(np.square(actual - ref))
-        reward = float(np.exp(-2.0 * error))
-        return reward
+# ===========================================================================
 
 
-# ------------------------------------------------------------------
+def make_env_fn(gui: bool = False):
+    """Factory that returns a single wrapped environment."""
+    def _init():
+        env = HumanoidGymEnv(gui=gui, motion_path=MOTION_PATH)
+        env = TimeLimit(env, max_episode_steps=MAX_EPISODE_STEPS)
+        env = Monitor(env)
+        return env
+    return _init
+
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--resume", action="store_true")
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume from a checkpoint zip",
+    )
+    parser.add_argument(
+        "--checkpoint",
+        default=f"{CHECKPOINT_DIR}/humanoid_ppo_1000000_steps.zip",
+        help="Checkpoint .zip to resume from (used with --resume)",
+    )
+    parser.add_argument(
+        "--resume-steps",
+        type=int,
+        default=0,
+        help="Steps already completed in the checkpoint (fixes progress bar)",
+    )
+    parser.add_argument(
+        "--gui",
+        action="store_true",
+        default=False,
+        help="Open PyBullet GUI (forces N_ENVS=1 and DummyVecEnv)",
+    )
     args = parser.parse_args()
 
-    env = create_environment(gui=GUI, motion_path=MOTION_PATH)
+    os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+    os.makedirs(BEST_MODEL_DIR, exist_ok=True)
+    os.makedirs(LOG_DIR,        exist_ok=True)
 
-    obs_raw, _ = env.get_obs()
-    obs_dim    = len(obs_raw)
-    act_dim    = len(env.joint_ids)
-    print(f"obs_dim={obs_dim}  act_dim={act_dim}  stage={STAGE}")
+    # GUI mode must run single-process (PyBullet GUI can't be forked)
+    n_envs     = 1 if args.gui else N_ENVS
+    vec_cls    = DummyVecEnv if (args.gui or n_envs == 1) else SubprocVecEnv
 
-    # Wire up motion imitation reward
-    motion_reward = MotionImitationReward(
-        path       = MOTION_PATH,
-        joint_ids  = env.joint_ids,
-        cid        = env.cid,
-        humanoid_id= env.humanoid,
+    print(f"Creating {n_envs} environment(s) via {vec_cls.__name__} …")
+    env = make_vec_env(
+        make_env_fn(gui=args.gui),
+        n_envs      = n_envs,
+        vec_env_cls = vec_cls,
     )
 
-    policy    = PolicyNet(obs_dim, act_dim)
-    optimizer = optim.Adam(policy.parameters(), lr=3e-4)
+    # ------------------------------------------------------------------
+    # Callbacks
+    # ------------------------------------------------------------------
+    checkpoint_cb = CheckpointCallback(
+        save_freq   = max(CHECKPOINT_FREQ // n_envs, 1),
+        save_path   = CHECKPOINT_DIR,
+        name_prefix = "humanoid_ppo",
+        verbose     = 1,
+    )
 
-    start_step = 0
-    falls      = 0
+    # Eval env uses the same vec type as training env to avoid SB3 warning
+    eval_env = make_vec_env(
+        make_env_fn(gui=False),
+        n_envs      = 1,
+        vec_env_cls = vec_cls,
+    )
+    eval_cb = EvalCallback(
+        eval_env,
+        best_model_save_path = BEST_MODEL_DIR,
+        log_path             = LOG_DIR,
+        eval_freq            = max(CHECKPOINT_FREQ // n_envs, 1),
+        n_eval_episodes      = 5,
+        deterministic        = True,
+        verbose              = 1,
+    )
 
-    if args.resume and os.path.exists(CHECKPOINT_PATH):
-        ckpt = torch.load(CHECKPOINT_PATH, weights_only=True)
-        policy.load_state_dict(ckpt["policy"])
-        optimizer.load_state_dict(ckpt["optimizer"])
-        start_step = ckpt.get("step", 0)
-        falls      = ckpt.get("falls", 0)
-        print(f"Resumed from step {start_step}, falls so far: {falls}")
+    callbacks = [checkpoint_cb, eval_cb]
+
+    # ------------------------------------------------------------------
+    # Model
+    # ------------------------------------------------------------------
+    policy_kwargs = dict(
+        net_arch      = POLICY_NET_ARCH,
+        activation_fn = __import__("torch").nn.Tanh,
+    )
+
+    if args.resume:
+        if not os.path.exists(args.checkpoint):
+            raise FileNotFoundError(
+                f"Checkpoint not found: {args.checkpoint}\n"
+                f"Available checkpoints: {os.listdir(CHECKPOINT_DIR)}"
+            )
+        print(f"Resuming from: {args.checkpoint}  (steps already done: {args.resume_steps:,})")
+        model = PPO.load(
+            args.checkpoint,
+            env             = env,
+            tensorboard_log = LOG_DIR,
+        )
+        steps_to_run = max(TOTAL_STEPS - args.resume_steps, 0)
     else:
-        print("Starting fresh.")
+        print("Starting fresh training run.")
+        model = PPO(
+            policy          = "MlpPolicy",
+            env             = env,
+            device          = "cpu",
+            verbose         = 1,
+            tensorboard_log = LOG_DIR,
+            n_steps         = N_STEPS,
+            batch_size      = BATCH_SIZE,
+            n_epochs        = N_EPOCHS,
+            learning_rate   = LEARNING_RATE,
+            ent_coef        = ENT_COEF,
+            clip_range      = CLIP_RANGE,
+            gae_lambda      = GAE_LAMBDA,
+            gamma           = GAMMA,
+            vf_coef         = VF_COEF,
+            max_grad_norm   = MAX_GRAD_NORM,
+            policy_kwargs   = policy_kwargs,
+        )
+        steps_to_run = TOTAL_STEPS
 
-    gamma      = 0.99
-    log_probs  = []
-    rewards    = []
-    total_step = start_step
-    dt         = 1.0 / 240.0
+    print()
+    print(f"  Motion file      : {MOTION_PATH}")
+    print(f"  Parallel envs    : {n_envs}")
+    print(f"  Max episode steps: {MAX_EPISODE_STEPS:,}")
+    print(f"  Steps to run     : {steps_to_run:,}")
+    print(f"  Checkpoints      : {CHECKPOINT_DIR}/")
+    print(f"  Best model       : {BEST_MODEL_DIR}/")
+    print(f"  TensorBoard logs : {LOG_DIR}/")
+    print()
+    print("  Watch live:  tensorboard --logdir", LOG_DIR)
+    print()
 
-    obs = env.reset()
-    motion_reward.reset()
+    model.learn(
+        total_timesteps     = steps_to_run,
+        callback            = callbacks,
+        reset_num_timesteps = not args.resume,
+        progress_bar        = True,
+    )
 
-    while total_step < TOTAL_STEPS:
+    model.save(FINAL_MODEL_PATH)
+    print(f"Training complete — saved {FINAL_MODEL_PATH}.zip")
 
-        obs_tensor       = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
-        action, log_prob = policy.sample(obs_tensor)
-        action           = action.squeeze(0)
-        log_prob         = log_prob.squeeze(0)
-        action_np        = torch.clamp(action, -1.0, 1.0).detach().numpy()
-
-        if GUI:
-            time.sleep(dt)
-
-        obs, env_reward, done = env.step(action_np)
-
-        # Add motion imitation reward on top of env reward
-        imitation_reward = motion_reward.step(dt)
-        reward = env_reward + imitation_reward
-
-        log_probs.append(log_prob)
-        rewards.append(reward)
-        total_step += 1
-
-        if done:
-            falls += 1
-            obs = env.reset()
-            motion_reward.reset()
-            print(f"  Fall #{falls} at step {total_step}")
-
-        # Gradient update every UPDATE_EVERY steps
-        if len(rewards) >= UPDATE_EVERY:
-            returns = []
-            G = 0.0
-            for r in reversed(rewards):
-                G = r + gamma * G
-                returns.insert(0, G)
-
-            returns_t   = torch.tensor(returns, dtype=torch.float32)
-            returns_t   = (returns_t - returns_t.mean()) / (returns_t.std() + 1e-8)
-            log_probs_t = torch.stack(log_probs)
-            advantages  = returns_t - returns_t.mean()
-
-            loss = -(log_probs_t * advantages).mean()  # no entropy term
-
-            optimizer.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(policy.parameters(), max_norm=0.5)
-            optimizer.step()
-
-            avg_r = sum(rewards) / len(rewards)
-            print(f"Step: {total_step:>8} | Avg reward: {avg_r:>7.3f} | Falls: {falls}")
-
-            log_probs = []
-            rewards   = []
-
-        if total_step % 10_000 == 0:
-            torch.save({
-                "policy":    policy.state_dict(),
-                "optimizer": optimizer.state_dict(),
-                "step":      total_step,
-                "falls":     falls,
-            }, CHECKPOINT_PATH)
-            print(f"  → Checkpoint saved at step {total_step}")
-
-    print("Training complete.")
+    env.close()
+    eval_env.close()
 
 
 if __name__ == "__main__":
