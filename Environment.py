@@ -70,73 +70,73 @@ def create_environment(gui, motion_path="humanoid3d_walk.txt"):
             physicsClientId=cid
         )
 
-    # ---- Floor ----
-    p.loadURDF("plane.urdf", physicsClientId=cid)
+    # ---- Floor ---- floor with humanoid file causing jumping.
+    # p.loadURDF("plane.urdf", physicsClientId=cid)
 
     # ---- Walls ----
-    wall     = p.createCollisionShape(p.GEOM_BOX, halfExtents=[0.4, 10, 2], physicsClientId=cid)
-    tb_wall  = p.createCollisionShape(p.GEOM_BOX, halfExtents=[10, 0.4, 2], physicsClientId=cid)
-    wall_vis = p.createVisualShape(p.GEOM_BOX, halfExtents=[0.4, 10, 2],  rgbaColor=[1,0,0,1], physicsClientId=cid)
-    tb_vis   = p.createVisualShape(p.GEOM_BOX, halfExtents=[10, 0.4, 2], rgbaColor=[0,0,1,1], physicsClientId=cid)
+    wall     = p.createCollisionShape(p.GEOM_BOX, halfExtents=[0.4, 10, 4], physicsClientId=cid)
+    tb_wall  = p.createCollisionShape(p.GEOM_BOX, halfExtents=[10, 0.4, 4], physicsClientId=cid)
+    wall_vis = p.createVisualShape(p.GEOM_BOX, halfExtents=[0.4, 10, 4],  rgbaColor=[1,0,0,1], physicsClientId=cid)
+    tb_vis   = p.createVisualShape(p.GEOM_BOX, halfExtents=[10, 0.4, 4], rgbaColor=[0,0,1,1], physicsClientId=cid)
 
     p.createMultiBody(0, wall,    wall_vis, basePosition=[ 10,  0, 2], physicsClientId=cid)
     p.createMultiBody(0, wall,    wall_vis, basePosition=[-10,  0, 2], physicsClientId=cid)
     p.createMultiBody(0, tb_wall, tb_vis,   basePosition=[  0, 10, 2], physicsClientId=cid)
     p.createMultiBody(0, tb_wall, tb_vis,   basePosition=[  0,-10, 2], physicsClientId=cid)
 
+    # All obstacles have mass=0 (static) and z = halfExtent so they sit on the floor
     # 1 RED cube
     cube1_col = p.createCollisionShape(p.GEOM_BOX, halfExtents=[0.6, 0.6, 0.6], physicsClientId=cid)
     cube1_vis = p.createVisualShape(p.GEOM_BOX, halfExtents=[0.6, 0.6, 0.6], rgbaColor=[1, 0, 0, 1], physicsClientId=cid)
-    p.createMultiBody(2.0, cube1_col, cube1_vis, basePosition=[4, 4, 1.8], physicsClientId=cid)
+    p.createMultiBody(0, cube1_col, cube1_vis, basePosition=[4, 4, 0.6], physicsClientId=cid)
 
     # 2 BLUE cube
     cube2_col = p.createCollisionShape(p.GEOM_BOX, halfExtents=[0.6, 0.6, 0.6], physicsClientId=cid)
     cube2_vis = p.createVisualShape(p.GEOM_BOX, halfExtents=[0.6, 0.6, 0.6], rgbaColor=[0, 0, 1, 1], physicsClientId=cid)
-    p.createMultiBody(2.0, cube2_col, cube2_vis, basePosition=[-4, -4, 1.8], physicsClientId=cid)
+    p.createMultiBody(0, cube2_col, cube2_vis, basePosition=[-4, -4, 0.6], physicsClientId=cid)
 
     # 3 GREEN cube
     cube3_col = p.createCollisionShape(p.GEOM_BOX, halfExtents=[0.6, 0.6, 0.6], physicsClientId=cid)
     cube3_vis = p.createVisualShape(p.GEOM_BOX, halfExtents=[0.6, 0.6, 0.6], rgbaColor=[0, 1, 0, 1], physicsClientId=cid)
-    p.createMultiBody(2.0, cube3_col, cube3_vis, basePosition=[4, -4, 1.8], physicsClientId=cid)
+    p.createMultiBody(0, cube3_col, cube3_vis, basePosition=[4, -4, 0.6], physicsClientId=cid)
 
     # 4 YELLOW cube
     cube4_col = p.createCollisionShape(p.GEOM_BOX, halfExtents=[0.6, 0.6, 0.6], physicsClientId=cid)
     cube4_vis = p.createVisualShape(p.GEOM_BOX, halfExtents=[0.6, 0.6, 0.6], rgbaColor=[1, 1, 0, 1], physicsClientId=cid)
-    p.createMultiBody(2.0, cube4_col, cube4_vis, basePosition=[-4, 4, 1.8], physicsClientId=cid)
+    p.createMultiBody(0, cube4_col, cube4_vis, basePosition=[-4, 4, 0.6], physicsClientId=cid)
 
     # 5 CYAN rectangle
     rect5_col = p.createCollisionShape(p.GEOM_BOX, halfExtents=[0.6, 0.6, 1.2], physicsClientId=cid)
     rect5_vis = p.createVisualShape(p.GEOM_BOX, halfExtents=[0.6, 0.6, 1.2], rgbaColor=[0, 1, 1, 1], physicsClientId=cid)
-    p.createMultiBody(3.0, rect5_col, rect5_vis, basePosition=[0, 6, 2.4], physicsClientId=cid)
+    p.createMultiBody(0, rect5_col, rect5_vis, basePosition=[0, 6, 1.2], physicsClientId=cid)
 
     # 6 MAGENTA rectangle
     rect6_col = p.createCollisionShape(p.GEOM_BOX, halfExtents=[0.6, 0.6, 1.2], physicsClientId=cid)
     rect6_vis = p.createVisualShape(p.GEOM_BOX, halfExtents=[0.6, 0.6, 1.2], rgbaColor=[1, 0, 1, 1], physicsClientId=cid)
-    p.createMultiBody(3.0, rect6_col, rect6_vis, basePosition=[0, -6, 2.4], physicsClientId=cid)
+    p.createMultiBody(0, rect6_col, rect6_vis, basePosition=[0, -6, 1.2], physicsClientId=cid)
 
     # 7 ORANGE rectangle
     rect7_col = p.createCollisionShape(p.GEOM_BOX, halfExtents=[0.6, 0.6, 1.2], physicsClientId=cid)
-    rect7_vis = p.createVisualShape(p.GEOM_BOX, halfExtents=[0.6, 0.6, 2.2], rgbaColor=[1, 0.5, 0, 1], physicsClientId=cid)
-    p.createMultiBody(3.0, rect7_col, rect7_vis, basePosition=[6, 0, 2.4], physicsClientId=cid)
+    rect7_vis = p.createVisualShape(p.GEOM_BOX, halfExtents=[0.6, 0.6, 1.2], rgbaColor=[1, 0.5, 0, 1], physicsClientId=cid)
+    p.createMultiBody(0, rect7_col, rect7_vis, basePosition=[6, 0, 1.2], physicsClientId=cid)
 
     # 8 PURPLE rectangle
     rect8_col = p.createCollisionShape(p.GEOM_BOX, halfExtents=[0.6, 0.6, 1.2], physicsClientId=cid)
     rect8_vis = p.createVisualShape(p.GEOM_BOX, halfExtents=[0.6, 0.6, 1.2], rgbaColor=[0.5, 0, 1, 1], physicsClientId=cid)
-    p.createMultiBody(3.0, rect8_col, rect8_vis, basePosition=[-6, 0, 2.4], physicsClientId=cid)
+    p.createMultiBody(0, rect8_col, rect8_vis, basePosition=[-6, 0, 1.2], physicsClientId=cid)
 
-    # Sphere corner markers (diagonal inside map)
+    # Sphere corner markers — static, z = radius so they sit on the floor
     sphere_col = p.createCollisionShape(p.GEOM_SPHERE, radius=1.60, physicsClientId=cid)
-    sphere_vis = p.createVisualShape(p.GEOM_SPHERE, radius=1.60, rgbaColor=[0.3, 0.3, 0.3, 2.8], physicsClientId=cid)
-    z = 2.8
-    p.createMultiBody(1.0, sphere_col, sphere_vis, basePosition=[6.2,  6.2, z], physicsClientId=cid)
-    p.createMultiBody(1.0, sphere_col, sphere_vis, basePosition=[-6.2, 6.2, z], physicsClientId=cid)
-    p.createMultiBody(1.0, sphere_col, sphere_vis, basePosition=[6.2, -6.2, z], physicsClientId=cid)
-    p.createMultiBody(1.0, sphere_col, sphere_vis, basePosition=[-6.2,-6.2, z], physicsClientId=cid)
-    p.createMultiBody(1.0, sphere_col, sphere_vis, basePosition=[3,    0,   z], physicsClientId=cid)
+    sphere_vis = p.createVisualShape(p.GEOM_SPHERE, radius=1.60, rgbaColor=[0.3, 0.3, 0.3, 2.4], physicsClientId=cid)
+    z = 1.6
+    p.createMultiBody(0, sphere_col, sphere_vis, basePosition=[6.2,  6.2, z], physicsClientId=cid)
+    p.createMultiBody(0, sphere_col, sphere_vis, basePosition=[-6.2, 6.2, z], physicsClientId=cid)
+    p.createMultiBody(0, sphere_col, sphere_vis, basePosition=[6.2, -6.2, z], physicsClientId=cid)
+    p.createMultiBody(0, sphere_col, sphere_vis, basePosition=[-6.2,-6.2, z], physicsClientId=cid)
+    p.createMultiBody(0, sphere_col, sphere_vis, basePosition=[3,    0,   z], physicsClientId=cid)
 
     world_body_count = p.getNumBodies(physicsClientId=cid)
 
-    # Only load motion clip in stage 2 — not needed for standing
     motion = MotionClip(motion_path) if STAGE == 2 else None
 
     env = HumanoidEnv(cid, world_body_count, motion)
@@ -147,7 +147,7 @@ def create_environment(gui, motion_path="humanoid3d_walk.txt"):
 # ---------------------------------------------------------------------------
 class HumanoidEnv:
 
-    START_POS = [0, 3.5, 1.2]   # raised to avoid floor clipping on spawn
+    START_POS = [0, 0, 2.4]  # torso centre when feet are on plane.urdf (z=0)
     START_ORN = [0, 0, 0, 1]
 
     GOAL_POSITIONS = [
@@ -159,7 +159,7 @@ class HumanoidEnv:
     PHYSICS_HZ = 240
     SUB_STEPS  = 4
     MAX_FORCE  = 150
-    VEL_SCALE  = 5.0
+    VEL_SCALE  = 1.5
 
     # Stage 2 DeepMimic reward weights — must sum to 1.0
     W_POSE    = 0.65
@@ -203,10 +203,6 @@ class HumanoidEnv:
 
         print(f"[HumanoidEnv] Stage {STAGE} | Controllable joints: {len(self.joint_ids)}")
 
-        for bid in self.all_bodies:
-            p.resetBasePositionAndOrientation(bid, self.START_POS, self.START_ORN, physicsClientId=self.cid)
-            p.resetBaseVelocity(bid, [0, 0, 0], [0, 0, 0], physicsClientId=self.cid)
-
         for j in self.joint_ids:
             p.resetJointState(self.humanoid, j, targetValue=0.0, targetVelocity=0.0, physicsClientId=self.cid)
 
@@ -214,11 +210,9 @@ class HumanoidEnv:
         if STAGE == 2 and self.motion is not None:
             self._apply_reference_pose(0.0)
 
-        for _ in range(30):
-            p.stepSimulation(physicsClientId=self.cid)
-
-        for bid in self.all_bodies:
-            p.resetBaseVelocity(bid, [0, 0, 0], [0, 0, 0], physicsClientId=self.cid)
+        # No settling steps — they drop the humanoid into the floor before motors are active
+        #for bid in self.all_bodies:
+            #p.resetBaseVelocity(bid, [0, 0, 0], [0, 0, 0], physicsClientId=self.cid)
 
     def _apply_reference_pose(self, elapsed: float):
         """Set all joints to match the reference motion at elapsed time. Stage 2 only."""
@@ -258,22 +252,31 @@ class HumanoidEnv:
 
     # --- reset ----------------------------------------------------------
     def reset(self):
-        pos, _ = p.getBasePositionAndOrientation(self.humanoid, physicsClientId=self.cid)
-
-        # Reset position AND orientation on fall so it spawns upright, not face-down
-        if pos[2] < 0.5:
-            p.resetBasePositionAndOrientation(
-                self.humanoid,
-                self.START_POS,
-                self.START_ORN,
-                physicsClientId=self.cid
+        # Disable all motors FIRST so they don't fire during the reset
+        for j in self.joint_ids:
+            p.setJointMotorControl2(
+                bodyUniqueId    = self.humanoid,
+                jointIndex      = j,
+                controlMode     = p.VELOCITY_CONTROL,
+                targetVelocity  = 0.0,
+                force           = 0.0,  # zero force = motor off
+                physicsClientId = self.cid
             )
 
-        # Zero all velocity before posing to prevent explosive joint forces
-        for bid in self.all_bodies:
-            p.resetBaseVelocity(bid, [0, 0, 0], [0, 0, 0], physicsClientId=self.cid)
-        for j in self.joint_ids:
-            p.resetJointState(self.humanoid, j, targetValue=0.0, targetVelocity=0.0, physicsClientId=self.cid)
+        # Now safe to reposition
+        p.resetBasePositionAndOrientation(
+            self.humanoid,
+            self.START_POS,
+            self.START_ORN,
+            physicsClientId=self.cid
+        )
+
+        p.resetBaseVelocity(
+            self.humanoid,
+            [0, 0, 0],
+            [0, 0, 0],
+            physicsClientId=self.cid
+        )
 
         # Stage 2: apply reference walk pose at random phase
         if STAGE == 2 and self.motion is not None:
@@ -388,40 +391,23 @@ class HumanoidEnv:
         # ----------------------------------------------------------------
         if STAGE == 1:
 
-            # --- rewards from original branch (was producing balance behaviour) ---
+            # 1. Upright reward — primary signal, uses quaternion so tilting sideways
+            #    is penalised just as much as falling forward/back
+            upright_reward = 4.0 * upright_fraction  # 0 when flat, 4 when fully upright
 
-            # A. Forward progress reward (keep Y velocity, this created upright pressure)
-            forward_reward = vel[1] * 1.0
+            # 2. Height reward — secondary, encourages staying tall
+            height_reward = 3.0 * min(pos[2] / 1.2, 1.0)  # full reward at spawn height
 
-            # B. Height penalty — strong signal that kept the robot tall
-            height_penalty = 0.0
-            if pos[2] < 1.2:
-                low_height_val     = max(0, 1.2 - pos[2]) * 5.0
-                fall_speed_penalty = max(0, -vel[2]) * 2.0
-                height_penalty     = low_height_val + fall_speed_penalty
+            # 3. Angular velocity penalty — discourages spinning/wobbling
+            stability_penalty = 0.5 * float(np.linalg.norm(ang_vel))
 
-            # C. Lateral deviation penalty
-            lateral_penalty = abs(pos[0]) * 0.5
+            # 4. Survival bonus — small reward every step just for not falling
+            survival_bonus = 0.5
 
-            # D. Stability — penalise side-to-side velocity
-            stability_penalty = abs(vel[0]) * 0.5
+            reward = upright_reward + height_reward - stability_penalty + survival_bonus
 
-            # E. Momentum bonus
-            momentum_bonus = -abs(vel[0]) * 0.1
-
-            # F. Survival bonus — small reward each step for staying up
-            survival_bonus = 0.1
-
-            reward = (
-                forward_reward
-                - height_penalty
-                - lateral_penalty
-                - stability_penalty
-                + momentum_bonus
-                + survival_bonus
-            )
-
-            done = bool(pos[2] < 0.5)
+            # Fall = torso too low OR tilted past ~45 degrees (upright_dot < 0.7)
+            done = bool(pos[2] < 0.3 or upright_dot < -0.2)
 
         # ----------------------------------------------------------------
         # STAGE 2 REWARD — DeepMimic motion imitation (Peng et al. 2018)
