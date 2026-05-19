@@ -63,28 +63,34 @@ import pybullet_data
 @dataclass
 class GaitParams:
     # -- locomotion --
-    walk_speed: float       = 2.4     # m/s target (drives steering force)
+    walk_speed: float       = 1.6     # m/s target (drives steering force)
     max_turn_rate: float    = 1.2     # rad/s heading slew cap (gradual)
-    step_frequency: float   = 1.4     # Hz gait cycles / second
+    step_frequency: float   = 1.7     # Hz gait cycles / second (snappy)
     step_length: float      = 0.14    # m  (IK mode only)
     step_height: float      = 0.08    # m  (IK mode only)
 
     gait_mode: str          = "cpg"   # "cpg" (proven, stable) or "ik"
 
+    # how many physics substeps the game loop runs per walker.step()
+    # call -- MUST match HideSeekEnv.SIM_STEPS_PER_DECISION so the
+    # steering force is impulse-compensated correctly (see _locomote).
+    substeps: int           = 8
+
     # -- CPG joint amplitudes (proven on the MJCF humanoid) --
-    hip_y_amp: float        = 0.40    # sagittal hip swing  (rad)
-    hip_x_amp: float        = 0.08    # lateral hip sway     (rad)
-    knee_amp: float         = 0.70    # knee swing flexion   (rad)
-    knee_bias: float        = 0.05    # constant slight knee bend (rad)
-    ankle_y_amp: float      = 0.25    # ankle push-off       (rad)
-    shoulder_amp: float     = 0.35    # arm counter-swing    (rad)
-    abdomen_lean: float     = 0.10    # forward trunk lean   (rad)
+    hip_y_amp: float        = 0.55    # sagittal hip swing  (rad) bigger stride
+    hip_x_amp: float        = 0.10    # lateral hip sway     (rad)
+    knee_amp: float         = 1.00    # knee swing flexion   (rad) clear lift
+    knee_bias: float        = 0.08    # constant slight knee bend (rad)
+    ankle_y_amp: float      = 0.30    # ankle push-off       (rad)
+    shoulder_amp: float     = 0.45    # arm counter-swing    (rad) visible
+    abdomen_lean: float     = 0.12    # forward trunk lean   (rad)
 
     # -- low-level position control --
-    joint_force: float      = 150.0   # N.m  (matches HumanoidEnv.MAX_FORCE)
-    joint_max_vel: float    = 10.0    # rad/s position-control speed cap
-    kp: float               = 0.5     # position gain
-    kd: float               = 0.8     # velocity gain
+    joint_force: float      = 240.0   # N.m -- legs must move body mass,
+                                       # not just be dragged by the force
+    joint_max_vel: float    = 12.0    # rad/s position-control speed cap
+    kp: float               = 0.6     # position gain
+    kd: float               = 0.9     # velocity gain
 
     # -- balance / stabilisation --
     balance_kp_pitch: float = 12.0
@@ -651,9 +657,21 @@ class BipedNNWalker:
         # heading -- same mechanism as HumanoidCPGWalker.  This + the leg
         # gait + ground contact moves the (massed) body through physics.
         # The base is NEVER teleported during a step.
+        #
+        # CRITICAL FIX -- substep duty-cycle compensation:
+        # PyBullet CLEARS applyExternalForce after every stepSimulation().
+        # The game loop calls walker.step() ONCE and then steps the sim
+        # SUBSTEPS times, so a single applyExternalForce only acts on
+        # 1 of N physics steps -- the robot got ~1/N of the intended
+        # push and just shuffled in place ("barely moves").  Scaling the
+        # force by N makes the net impulse over the decision interval
+        # equal to a properly sustained force, so the body actually
+        # translates.  (This is also why the CPG hider half-worked.)
+        px, py, _ = self.get_pos()
         if moving:
-            pos = self.get_pos()
+            pos = [px, py, self.get_pos()[2]]
             scale = min(speed * self.prm.steer_force, self.prm.max_steer)
+            scale *= self.prm.substeps          # duty-cycle compensation
             try:
                 p.applyExternalForce(
                     self.biped_id, -1,
@@ -664,13 +682,13 @@ class BipedNNWalker:
                 pass
 
         # soft arena keep-in (gentle inward nudge, not a teleport)
-        px, py, _ = self.get_pos()
         if abs(px) > self.MAP_LIMIT or abs(py) > self.MAP_LIMIT:
             try:
                 p.applyExternalForce(
                     self.biped_id, -1,
-                    [-px * 40.0, -py * 40.0, 0.0],
-                    self.get_pos(), p.WORLD_FRAME,
+                    [-px * 40.0 * self.prm.substeps,
+                     -py * 40.0 * self.prm.substeps, 0.0],
+                    [px, py, self.get_pos()[2]], p.WORLD_FRAME,
                     physicsClientId=self.cid)
             except Exception:
                 pass

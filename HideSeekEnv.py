@@ -258,7 +258,7 @@ class HideSeekEnv:
     # Main game loop
     # ------------------------------------------------------------------
 
-    def run(self, num_rounds: int = 10):
+    def run(self, num_rounds: int = 100):
         print(f"\n[HideSeekEnv] Starting {num_rounds} rounds!\n")
 
         for round_idx in range(1, num_rounds + 1):
@@ -269,6 +269,7 @@ class HideSeekEnv:
 
             sim_time    = 0.0
             caught      = False
+            last_los    = False    # hider visible on the most recent step?
             step_reward = -0.01
 
             print(f"  Round {round_idx:>2} | "
@@ -280,6 +281,7 @@ class HideSeekEnv:
                 hider_pos  = self.hider_walker.get_pos()
 
                 los = self._has_line_of_sight(seeker_pos, hider_pos)
+                last_los = los    # remember for end-of-round scoring
                 dist_xy = math.sqrt(
                     (seeker_pos[0] - hider_pos[0]) ** 2 +
                     (seeker_pos[1] - hider_pos[1]) ** 2
@@ -319,12 +321,24 @@ class HideSeekEnv:
                 time.sleep(STEP_DT)
 
             if not caught:
-                self.hider_score += 1
-                msg = (f"HIDER SURVIVES! "
-                       f"(Seeker {self.seeker_score} – {self.hider_score} Hider)")
-                self._update_labels(0.0, msg)
-                print(f"    Hider survived the round!")
-                time.sleep(1.5)
+                if last_los:
+                    # Hider was in the seeker's line-of-sight when the
+                    # timer expired -> the seeker spotted it at the buzzer,
+                    # so this round goes to the SEEKER, not the hider.
+                    self.seeker_score += 1
+                    msg = (f"SEEKER SPOTS AT BUZZER! "
+                           f"(Seeker {self.seeker_score} – {self.hider_score} Hider)")
+                    self._update_labels(0.0, msg)
+                    print(f"    Hider was still visible at round end "
+                          f"— point to SEEKER")
+                    time.sleep(1.5)
+                else:
+                    self.hider_score += 1
+                    msg = (f"HIDER SURVIVES! "
+                           f"(Seeker {self.seeker_score} – {self.hider_score} Hider)")
+                    self._update_labels(0.0, msg)
+                    print(f"    Hider survived the round unseen!")
+                    time.sleep(1.5)
 
         winner = (
             "SEEKER (orange biped)" if self.seeker_score > self.hider_score else

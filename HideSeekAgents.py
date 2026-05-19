@@ -181,19 +181,136 @@ class SeekerAgent:
 # Hider — rule-based potential-field controller
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Policy-Gradient learner (REINFORCE) — deliberately a DIFFERENT RL family
+# from the seeker's tabular Q-learning, so the two are comparable.
+# ---------------------------------------------------------------------------
+
+class PolicyGradientLearner:
+    """
+    Monte-Carlo REINFORCE with a linear-softmax policy and a running
+    baseline.  Contrast with SeekerAgent's Q-table:
+
+      • policy-based, not value-based   (learns π(a|s) directly)
+      • on-policy                       (trains on its own samples)
+      • Monte-Carlo                     (whole-episode return, no bootstrap)
+      • stochastic softmax policy       (exploration via entropy, not ε)
+      • episodic update                 (one gradient step per round)
+
+    Policy:  logits = W · φ(s),  π = softmax(logits)
+    Update :  ΔW = lr · Σ_t (G_t − b) · (onehot(a_t) − π_t) ⊗ φ_t
+              with G_t the discounted return and b an EMA baseline
+              (variance reduction), plus a small entropy bonus so the
+              policy keeps exploring instead of collapsing early.
+    """
+
+    def __init__(self, n_features: int, n_actions: int,
+                 lr: float = 0.02, gamma: float = 0.95,
+                 entropy_beta: float = 0.01, seed: int = 0):
+        rng = np.random.default_rng(seed)
+        self.W            = rng.normal(0.0, 0.01,
+                                       size=(n_actions, n_features))
+        self.n_actions    = n_actions
+        self.lr           = lr
+        self.gamma        = gamma
+        self.entropy_beta = entropy_beta
+        self.baseline     = 0.0           # EMA of mean episode return
+        self.episode_count = 0
+        self.last_return   = 0.0
+        self._traj         = []           # list of (phi, action, prob, r)
+
+    # ---- policy ------------------------------------------------------
+    def _softmax(self, logits):
+        z = logits - np.max(logits)
+        e = np.exp(np.clip(z, -50.0, 50.0))
+        return e / (np.sum(e) + 1e-12)
+
+    def act(self, phi):
+        """Sample an action from the current stochastic policy."""
+        phi   = np.asarray(phi, dtype=np.float64)
+        probs = self._softmax(self.W @ phi)
+        a     = int(np.random.choice(self.n_actions, p=probs))
+        return a, probs
+
+    def record(self, phi, action, probs, reward):
+        self._traj.append(
+            (np.asarray(phi, dtype=np.float64), action,
+             np.asarray(probs, dtype=np.float64), float(reward)))
+
+    # ---- episodic REINFORCE update ----------------------------------
+    def finish_episode(self):
+        """Run one policy-gradient update over the finished trajectory."""
+        if not self._traj:
+            return
+        T = len(self._traj)
+
+        # discounted returns G_t
+        returns = np.zeros(T)
+        g = 0.0
+        for t in reversed(range(T)):
+            g = self._traj[t][3] + self.gamma * g
+            returns[t] = g
+
+        mean_G = float(np.mean(returns))
+        self.last_return = float(returns[0])
+        # EMA baseline for variance reduction
+        self.baseline += 0.1 * (mean_G - self.baseline)
+
+        gradW = np.zeros_like(self.W)
+        for t in range(T):
+            phi, a, probs, _ = self._traj[t]
+            adv      = returns[t] - self.baseline
+            onehot   = np.zeros(self.n_actions)
+            onehot[a] = 1.0
+            # ∇ log π(a|s) for linear-softmax = (onehot − π) ⊗ φ
+            gradW += adv * np.outer(onehot - probs, phi)
+            # entropy bonus keeps the policy from collapsing too soon
+            ent_grad = -(probs * (np.log(probs + 1e-12) + 1.0))
+            gradW += self.entropy_beta * np.outer(ent_grad, phi)
+
+        gradW /= T
+        # gradient clipping for stability
+        norm = np.linalg.norm(gradW)
+        if norm > 5.0:
+            gradW *= 5.0 / norm
+        self.W += self.lr * gradW
+
+        self.episode_count += 1
+        self._traj.clear()
+
+
 class HiderAgent:
     """
-    Strategy: Rule-based potential fields.
+    Strategy: Rule-based potential fields  +  a REINFORCE policy that
+    learns WHICH field-derived strategy to use.
 
-    Forces:
+    Layer 1 (unchanged, rule-based potential fields):
       • Repulsion  from seeker (large, distance-squared falloff)
       • Attraction to nearest obstacle centroid (for cover)
       • Wall repulsion (keeps hider away from boundary)
       • Small random noise (breaks symmetry)
 
-    This is a deliberate algorithmic contrast to the Q-learning seeker,
-    making the performance comparison meaningful.
+    Layer 2 (learned, Monte-Carlo policy gradient — REINFORCE):
+      The field math above yields several candidate headings (follow the
+      blended field, flee straight away, commit to cover, or juke
+      laterally).  A linear-softmax policy, trained by REINFORCE at the
+      end of every round on the hider's own survival reward, learns the
+      state-dependent probability of each.  Action 0 reproduces the
+      original pure rule-based behaviour, so learning can only add to it.
+
+    This is a deliberate algorithmic contrast to the seeker: the seeker
+    learns by VALUE-based tabular Q-learning; the hider learns by
+    POLICY-based episodic policy gradient — different RL families on a
+    comparable decision, which is the point of the comparison.
     """
+
+    # ---- learned-strategy action set (all derived from the field) ----
+    #   0 : follow the blended potential field   (original behaviour)
+    #   1 : flee straight away from the seeker    (aggressive evasion)
+    #   2 : commit to the best cover obstacle     (break line of sight)
+    #   3 : juke laterally across the seeker line (dodge pursuit)
+    N_STRATEGIES = 4
+    N_FEATURES   = 6   # [bias, d_seek, sinθ, cosθ, cover, wall]
 
     # Static obstacle centroids from Environment.py
     OBSTACLE_POSITIONS = [
@@ -214,11 +331,25 @@ class HiderAgent:
 
     WALL_LIMIT = 8.5   # stay inside this radius from centre
 
-    def __init__(self, speed: float = 2.8):
+    def __init__(self, speed: float = 2.8, learn: bool = True):
         self.speed = speed
         self._noise_angle = 0.0
 
+        # Layer-2 learner (REINFORCE). learn=False ⇒ pure rule-based,
+        # which is handy for an A/B baseline against the learning hider.
+        self.learn   = learn
+        self.learner = PolicyGradientLearner(
+            n_features=self.N_FEATURES, n_actions=self.N_STRATEGIES)
+        self._pending = None   # (phi, action, probs) awaiting its reward
+        self._prev_dist = None # seeker distance last step (reward shaping)
+
     def reset(self):
+        # End-of-round: run the Monte-Carlo policy-gradient update on the
+        # round that just finished, then start a fresh episode.
+        if self.learn:
+            self.learner.finish_episode()
+        self._pending   = None
+        self._prev_dist = None
         self._noise_angle = random.uniform(0, 2 * math.pi)
 
     def step(self, hider_pos, seeker_pos):
@@ -281,9 +412,63 @@ class HiderAgent:
         fx += math.cos(self._noise_angle) * 0.3
         fy += math.sin(self._noise_angle) * 0.3
 
-        # Normalise and scale to speed
+        # Normalise and scale to speed  (this is the rule-based heading)
         magnitude = math.sqrt(fx ** 2 + fy ** 2) + 1e-6
         vx = (fx / magnitude) * self.speed
         vy = (fy / magnitude) * self.speed
 
+        # ------------------------------------------------------------------
+        # Layer 2 — REINFORCE policy decides which strategy heading to use.
+        # All candidate headings are derived from quantities the rule-based
+        # field already computed, so nothing about Layer 1 is discarded.
+        # ------------------------------------------------------------------
+        if not self.learn:
+            return vx, vy
+
+        sdx, sdy = hx - sx, hy - sy
+        d_seek   = math.sqrt(sdx * sdx + sdy * sdy) + 1e-6
+
+        # ---- credit the PREVIOUS step's action with this step's reward ----
+        # Hider reward (self-contained, survival-oriented): stay far from
+        # the seeker, gain a bonus while good cover is available, small
+        # penalty near the wall, tiny step cost.
+        if self._pending is not None:
+            wall = math.sqrt(hx * hx + hy * hy)
+            r = (min(d_seek / 6.0, 1.0)
+                 + 0.4 * (1.0 if best_score > 0.6 else 0.0)
+                 - 0.3 * (1.0 if wall > self.WALL_LIMIT - 1.0 else 0.0)
+                 - 0.01)
+            if self._prev_dist is not None and d_seek < self._prev_dist:
+                r -= 0.1                       # discourage closing the gap
+            phi_p, a_p, pr_p = self._pending
+            self.learner.record(phi_p, a_p, pr_p, r)
+        self._prev_dist = d_seek
+
+        # ---- build the policy state features φ(s) ----
+        seeker_bearing = math.atan2(sdy, sdx)        # away-from-seeker dir
+        wall_d = math.sqrt(hx * hx + hy * hy) / self.WALL_LIMIT
+        phi = np.array([
+            1.0,                                     # bias
+            min(d_seek / 8.0, 1.5),                  # distance to seeker
+            math.sin(seeker_bearing),
+            math.cos(seeker_bearing),
+            1.0 if best_score > 0.6 else 0.0,        # is good cover available
+            min(wall_d, 1.5),                        # proximity to wall
+        ], dtype=np.float64)
+
+        action, probs = self.learner.act(phi)
+        self._pending = (phi, action, probs)
+
+        # ---- candidate headings (all from existing field quantities) ----
+        field_ang = math.atan2(vy, vx)               # action 0 (rule-based)
+        away_ang  = seeker_bearing                    # action 1
+        if best_obs is not None:                      # action 2
+            cover_ang = math.atan2(best_obs[1] - hy, best_obs[0] - hx)
+        else:
+            cover_ang = field_ang
+        juke_ang  = away_ang + math.pi / 2.0          # action 3
+
+        chosen = (field_ang, away_ang, cover_ang, juke_ang)[action]
+        vx = math.cos(chosen) * self.speed
+        vy = math.sin(chosen) * self.speed
         return vx, vy
